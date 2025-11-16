@@ -25,11 +25,12 @@ load_dotenv()
 GOOGLE_MAPS_API_KEY = os.getenv('GOOGLE_MAPS_API_KEY', '')
 
 
-def geocode_address(full_address: str) -> Optional[Tuple[float, float]]:
+def geocode_address(full_address: str) -> Optional[Tuple[float, float, str]]:
     """
     Geocode a full address query string using Google Maps Geocoding API.
     The caller should include any contextual fields (e.g. name) in the query.
-    Returns (latitude, longitude) or None if not found.
+    Returns (latitude, longitude, confidence) or None if not found.
+    Confidence is the location_type from Google: ROOFTOP, RANGE_INTERPOLATED, GEOMETRIC_CENTER, or APPROXIMATE.
     """
     if not GOOGLE_MAPS_API_KEY:
         print("Error: GOOGLE_MAPS_API_KEY not set. Please set it in your .env or environment.")
@@ -57,6 +58,8 @@ def geocode_address(full_address: str) -> Optional[Tuple[float, float]]:
             if status == 'OK' and data.get('results'):
                 result = data['results'][0]
                 location = result['geometry']['location']
+                geometry = result.get('geometry', {})
+                location_type = geometry.get('location_type', 'UNKNOWN')
                 
                 # Verify the result is in Jamaica by checking country component
                 address_components = result.get('address_components', [])
@@ -69,6 +72,19 @@ def geocode_address(full_address: str) -> Optional[Tuple[float, float]]:
                     print(f"  Result outside Jamaica, skipping")
                     return None
                 
+                # Check if result has meaningful address components beyond just country
+                # We want at least a locality or administrative area
+                has_specific_location = any(
+                    any(t in comp.get('types', []) for t in ['locality', 'administrative_area_level_1', 
+                                                               'administrative_area_level_2', 'postal_code',
+                                                               'route', 'street_address', 'premise'])
+                    for comp in address_components
+                )
+                
+                if not has_specific_location:
+                    print(f"  Result lacks specific location details, rejecting")
+                    return None
+                
                 lat = float(location['lat'])
                 lon = float(location['lng'])
                 
@@ -77,7 +93,7 @@ def geocode_address(full_address: str) -> Optional[Tuple[float, float]]:
                     print(f"  Coordinates outside Jamaica bounds, skipping")
                     return None
                 
-                return (lat, lon)
+                return (lat, lon, location_type)
             elif status == 'ZERO_RESULTS':
                 return None
             else:
@@ -92,9 +108,9 @@ def geocode_address(full_address: str) -> Optional[Tuple[float, float]]:
         return None
 
 
-def geocode_dataframe(df: pd.DataFrame, address_column: str = 'address', delay: float = 0.1) -> gpd.GeoDataFrame:
+def geocode_dataframe(df: pd.DataFrame, address_column: str = 'address', delay: float = 0.1) -> Tuple[gpd.GeoDataFrame, dict]:
     """
-    Geocode all addresses in a DataFrame and return a GeoDataFrame.
+    Geocode all addresses in a DataFrame and return a GeoDataFrame with statistics.
     
     Parameters:
     - df: Input DataFrame with addresses
@@ -102,14 +118,18 @@ def geocode_dataframe(df: pd.DataFrame, address_column: str = 'address', delay: 
     - delay: Delay between requests in seconds (Google allows ~50 req/sec, 0.1s is safe)
     
     Returns:
-    - GeoDataFrame with point geometries
+    - Tuple of (GeoDataFrame with point geometries, statistics dict)
     """
     latitudes = []
     longitudes = []
+    confidences = []
+    stats = {'total': len(df), 'successful': 0, 'failed': 0, 'skipped': 0}
     
     print(f"\nGeocoding {len(df)} addresses...")
     
+    row_count = 0
     for idx, row in df.iterrows():
+        row_count += 1
         address = row.get(address_column, '')
         # If the CSV has a 'name' column, include it in the query to improve matching
         name = row.get('name') if 'name' in df.columns else None
@@ -118,29 +138,50 @@ def geocode_dataframe(df: pd.DataFrame, address_column: str = 'address', delay: 
             parts.append(str(name).strip())
         if address is not None and pd.notna(address) and str(address).strip():
             parts.append(str(address).strip())
-        full_query = ", ".join(parts) if parts else str(address)
+        full_query = ", ".join(parts) if parts else ''
 
-        print(f"[{idx+1}/{len(df)}] {full_query}")
-
-        coords = geocode_address(full_query)
-        
-        if coords:
-            lat, lon = coords
-            latitudes.append(lat)
-            longitudes.append(lon)
-            print(f"  → {lat:.6f}, {lon:.6f}")
-        else:
+        # Skip empty addresses
+        if not full_query:
+            print(f"[{row_count}/{len(df)}] (empty address - skipped)")
             latitudes.append(None)
             longitudes.append(None)
-            print(f"  → Failed to geocode")
+            confidences.append(None)
+            stats['skipped'] += 1
+            continue
+
+        print(f"[{row_count}/{len(df)}] {full_query}")
+
+        try:
+            coords = geocode_address(full_query)
+            
+            if coords:
+                lat, lon, confidence = coords
+                latitudes.append(lat)
+                longitudes.append(lon)
+                confidences.append(confidence)
+                stats['successful'] += 1
+                print(f"  → {lat:.6f}, {lon:.6f} ({confidence})")
+            else:
+                latitudes.append(None)
+                longitudes.append(None)
+                confidences.append(None)
+                stats['failed'] += 1
+                print(f"  → Failed to geocode")
+        except Exception as e:
+            print(f"  → Error during geocoding: {str(e)}")
+            latitudes.append(None)
+            longitudes.append(None)
+            confidences.append(None)
+            stats['failed'] += 1
         
-        # Respect API rate limit
-        if idx < len(df) - 1:
+        # Respect API rate limit - only sleep if not the last row
+        if row_count < len(df):
             time.sleep(delay)
     
     # Create GeoDataFrame
     df['latitude'] = latitudes
     df['longitude'] = longitudes
+    df['geocode_confidence'] = confidences
     
     # Create geometry column (only for successfully geocoded points)
     geometry = [Point(lon, lat) if lat is not None and lon is not None else None 
@@ -148,7 +189,7 @@ def geocode_dataframe(df: pd.DataFrame, address_column: str = 'address', delay: 
     
     gdf = gpd.GeoDataFrame(df, geometry=geometry, crs="EPSG:4326")
     
-    return gdf
+    return gdf, stats
 
 
 def spatial_join_boundaries(points_gdf: gpd.GeoDataFrame, boundaries_gdf: gpd.GeoDataFrame) -> gpd.GeoDataFrame:
@@ -311,11 +352,14 @@ def process_addresses(
     print(f"\nBoundary columns: {', '.join(boundaries.columns)}")
     
     # Geocode addresses
-    points_gdf = geocode_dataframe(df, address_column, delay)
+    points_gdf, stats = geocode_dataframe(df, address_column, delay)
     
-    # Count successful geocodes
-    successful = points_gdf.geometry.notna().sum()
-    print(f"\nSuccessfully geocoded: {successful}/{len(points_gdf)}")
+    # Print statistics
+    print(f"\nGeocoding Statistics:")
+    print(f"  Total addresses: {stats['total']}")
+    print(f"  Successfully geocoded: {stats['successful']}")
+    print(f"  Failed to geocode: {stats['failed']}")
+    print(f"  Skipped (empty): {stats['skipped']}")
     
     # Spatial join
     result = spatial_join_boundaries(points_gdf, boundaries)

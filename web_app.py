@@ -137,7 +137,7 @@ def geocode():
             return jsonify({'error': 'Boundary data not available'}), 500
         
         # Geocode addresses
-        points_gdf = geocode_dataframe(df, address_column='address', delay=0.1)
+        points_gdf, stats = geocode_dataframe(df, address_column='address', delay=0.1)
         
         # Spatial join with boundaries
         result = spatial_join_boundaries(points_gdf, boundaries)
@@ -154,21 +154,26 @@ def geocode():
         if output_format == 'xlsx':
             result_df.to_excel(output, index=False, engine='openpyxl')
             output.seek(0)
-            return send_file(
-                output,
-                mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-                as_attachment=True,
-                download_name='geocoded_addresses.xlsx'
-            )
+            mimetype = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            filename = 'geocoded_addresses.xlsx'
         else:
             result_df.to_csv(output, index=False)
             output.seek(0)
-            return send_file(
-                output,
-                mimetype='text/csv',
-                as_attachment=True,
-                download_name='geocoded_addresses.csv'
-            )
+            mimetype = 'text/csv'
+            filename = 'geocoded_addresses.csv'
+        
+        # Encode file as base64 to send with JSON
+        import base64
+        output.seek(0)
+        file_data = base64.b64encode(output.read()).decode('utf-8')
+        
+        return jsonify({
+            'success': True,
+            'stats': stats,
+            'file_data': file_data,
+            'filename': filename,
+            'mimetype': mimetype
+        })
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500

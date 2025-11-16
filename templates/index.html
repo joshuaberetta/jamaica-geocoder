@@ -192,6 +192,69 @@
             display: none;
         }
         
+        .success-summary {
+            margin-top: 20px;
+            padding: 20px;
+            background: #e8f5e9;
+            border-left: 4px solid #4caf50;
+            border-radius: 8px;
+            display: none;
+        }
+        
+        .success-summary h3 {
+            color: #2e7d32;
+            margin-bottom: 15px;
+            font-size: 18px;
+        }
+        
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 15px;
+        }
+        
+        .stat-box {
+            background: white;
+            padding: 15px;
+            border-radius: 6px;
+            text-align: center;
+        }
+        
+        .stat-number {
+            font-size: 32px;
+            font-weight: bold;
+            margin-bottom: 5px;
+        }
+        
+        .stat-number.total { color: #667eea; }
+        .stat-number.success { color: #4caf50; }
+        .stat-number.failed { color: #ff9800; }
+        .stat-number.skipped { color: #9e9e9e; }
+        
+        .stat-label {
+            font-size: 12px;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .download-again {
+            margin-top: 15px;
+            padding: 12px 24px;
+            background: #4caf50;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: 600;
+        }
+        
+        .download-again:hover {
+            background: #45a049;
+        }
+        
         .info-box {
             margin-top: 30px;
             padding: 20px;
@@ -258,6 +321,30 @@
         
         <div class="error" id="error"></div>
         
+        <div class="success-summary" id="successSummary">
+            <h3>✅ Geocoding Complete!</h3>
+            <div class="stats-grid">
+                <div class="stat-box">
+                    <div class="stat-number total" id="statTotal">0</div>
+                    <div class="stat-label">Total</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-number success" id="statSuccess">0</div>
+                    <div class="stat-label">Successful</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-number failed" id="statFailed">0</div>
+                    <div class="stat-label">Failed</div>
+                </div>
+                <div class="stat-box">
+                    <div class="stat-number skipped" id="statSkipped">0</div>
+                    <div class="stat-label">Skipped</div>
+                </div>
+            </div>
+            <p style="margin-bottom: 10px; color: #555; font-size: 14px;">Your file has been downloaded automatically.</p>
+            <button class="download-again" id="downloadAgain">Download Again</button>
+        </div>
+        
         <div class="info-box">
             <h3>📋 File Format Requirements</h3>
             <ul>
@@ -279,6 +366,10 @@
         const progress = document.getElementById('progress');
         const status = document.getElementById('status');
         const errorDiv = document.getElementById('error');
+        const successSummary = document.getElementById('successSummary');
+        const downloadAgainBtn = document.getElementById('downloadAgain');
+        
+        let lastDownloadData = null;
         
         // Click to upload
         uploadArea.addEventListener('click', () => fileInput.click());
@@ -287,6 +378,8 @@
         fileInput.addEventListener('change', (e) => {
             if (e.target.files.length > 0) {
                 fileName.textContent = `📎 ${e.target.files[0].name}`;
+                // Hide success summary when new file is selected
+                successSummary.style.display = 'none';
             }
         });
         
@@ -307,6 +400,14 @@
             if (e.dataTransfer.files.length > 0) {
                 fileInput.files = e.dataTransfer.files;
                 fileName.textContent = `📎 ${e.dataTransfer.files[0].name}`;
+                successSummary.style.display = 'none';
+            }
+        });
+        
+        // Download again button
+        downloadAgainBtn.addEventListener('click', () => {
+            if (lastDownloadData) {
+                downloadFile(lastDownloadData.fileData, lastDownloadData.filename, lastDownloadData.mimetype);
             }
         });
         
@@ -324,6 +425,7 @@
             // Show progress
             progress.style.display = 'block';
             errorDiv.style.display = 'none';
+            successSummary.style.display = 'none';
             submitBtn.disabled = true;
             status.textContent = 'Uploading and geocoding addresses...';
             
@@ -338,25 +440,27 @@
                     throw new Error(error.error || 'Failed to geocode addresses');
                 }
                 
+                const result = await response.json();
+                
+                if (!result.success) {
+                    throw new Error(result.error || 'Failed to geocode addresses');
+                }
+                
+                // Store download data
+                lastDownloadData = {
+                    fileData: result.file_data,
+                    filename: result.filename,
+                    mimetype: result.mimetype
+                };
+                
                 // Download the file
-                const blob = await response.blob();
-                const url = window.URL.createObjectURL(blob);
-                const a = document.createElement('a');
-                a.href = url;
+                downloadFile(result.file_data, result.filename, result.mimetype);
                 
-                const format = document.getElementById('format').value;
-                a.download = `geocoded_addresses.${format}`;
+                // Display statistics
+                displayStats(result.stats);
                 
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-                window.URL.revokeObjectURL(url);
-                
-                status.textContent = '✅ Download complete!';
-                setTimeout(() => {
-                    progress.style.display = 'none';
-                    submitBtn.disabled = false;
-                }, 2000);
+                progress.style.display = 'none';
+                submitBtn.disabled = false;
                 
             } catch (error) {
                 showError(error.message);
@@ -364,6 +468,36 @@
                 submitBtn.disabled = false;
             }
         });
+        
+        function downloadFile(base64Data, filename, mimetype) {
+            // Convert base64 to blob
+            const byteCharacters = atob(base64Data);
+            const byteNumbers = new Array(byteCharacters.length);
+            for (let i = 0; i < byteCharacters.length; i++) {
+                byteNumbers[i] = byteCharacters.charCodeAt(i);
+            }
+            const byteArray = new Uint8Array(byteNumbers);
+            const blob = new Blob([byteArray], { type: mimetype });
+            
+            // Create download link
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            window.URL.revokeObjectURL(url);
+        }
+        
+        function displayStats(stats) {
+            document.getElementById('statTotal').textContent = stats.total;
+            document.getElementById('statSuccess').textContent = stats.successful;
+            document.getElementById('statFailed').textContent = stats.failed;
+            document.getElementById('statSkipped').textContent = stats.skipped;
+            successSummary.style.display = 'block';
+        }
         
         function showError(message) {
             errorDiv.textContent = `❌ ${message}`;
