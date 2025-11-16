@@ -5,6 +5,7 @@ Upload CSV, get geocoded results with admin boundaries.
 """
 
 from flask import Flask, render_template, request, send_file, jsonify, redirect, url_for, session
+from flask_cors import CORS
 from werkzeug.utils import secure_filename
 import os
 import io
@@ -21,6 +22,7 @@ from geocode import geocode_address, geocode_dataframe, spatial_join_boundaries
 load_dotenv()
 
 app = Flask(__name__)
+CORS(app)  # Enable CORS for all routes
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 app.config['UPLOAD_FOLDER'] = tempfile.gettempdir()
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')

@@ -5,4 +5,5 @@ shapely
 python-dotenv
 openpyxl
 flask
+flask-cors
 gunicorn
