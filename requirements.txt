@@ -1,0 +1,8 @@
+requests
+pandas
+geopandas
+shapely
+python-dotenv
+openpyxl
+flask
+gunicorn
