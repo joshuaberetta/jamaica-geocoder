@@ -4,7 +4,7 @@ Web interface for Jamaica address geocoding.
 Upload CSV, get geocoded results with admin boundaries.
 """
 
-from flask import Flask, render_template, request, send_file, jsonify
+from flask import Flask, render_template, request, send_file, jsonify, redirect, url_for, session
 from werkzeug.utils import secure_filename
 import os
 import io
@@ -13,6 +13,7 @@ import geopandas as gpd
 from pathlib import Path
 import tempfile
 from dotenv import load_dotenv
+from functools import wraps
 
 # Import geocoding functions from geocode.py
 from geocode import geocode_address, geocode_dataframe, spatial_join_boundaries
@@ -22,6 +23,20 @@ load_dotenv()
 app = Flask(__name__)
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 app.config['UPLOAD_FOLDER'] = tempfile.gettempdir()
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
+
+# Login credentials from environment variables
+USERNAME = os.getenv('LOGIN_USERNAME', 'admin')
+PASSWORD = os.getenv('LOGIN_PASSWORD', 'admin')
+
+# Login required decorator
+def login_required(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('logged_in'):
+            return redirect(url_for('login'))
+        return f(*args, **kwargs)
+    return decorated_function
 
 # Load boundaries once at startup
 BOUNDARIES_FILE = os.getenv('BOUNDARIES_FILE', 'odpem.geojson')
@@ -35,11 +50,36 @@ def load_boundaries():
         print(f"Loaded {len(boundaries_gdf)} boundary features")
     return boundaries_gdf
 
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    if request.method == 'POST':
+        username = request.form.get('username')
+        password = request.form.get('password')
+        
+        if username == USERNAME and password == PASSWORD:
+            session['logged_in'] = True
+            return redirect(url_for('index'))
+        else:
+            return render_template('login.html', error='Invalid username or password')
+    
+    # If already logged in, redirect to main page
+    if session.get('logged_in'):
+        return redirect(url_for('index'))
+    
+    return render_template('login.html')
+
+@app.route('/logout')
+def logout():
+    session.pop('logged_in', None)
+    return redirect(url_for('login'))
+
 @app.route('/')
+@login_required
 def index():
     return render_template('index.html')
 
 @app.route('/geocode', methods=['POST'])
+@login_required
 def geocode():
     try:
         # Check if file was uploaded
