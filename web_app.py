@@ -136,8 +136,8 @@ def geocode():
         if boundaries is None:
             return jsonify({'error': 'Boundary data not available'}), 500
         
-        # Geocode addresses
-        points_gdf, stats = geocode_dataframe(df, address_column='address', delay=0.1)
+        # Geocode addresses - use minimal delay to avoid timeout
+        points_gdf, stats = geocode_dataframe(df, address_column='address', delay=0.05)
         
         # Spatial join with boundaries
         result = spatial_join_boundaries(points_gdf, boundaries)
