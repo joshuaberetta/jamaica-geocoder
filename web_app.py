@@ -9,6 +9,7 @@ from flask_cors import CORS
 from werkzeug.utils import secure_filename
 import os
 import io
+import json
 import pandas as pd
 import geopandas as gpd
 from shapely.geometry import Point
@@ -243,6 +244,80 @@ def geocode_single():
                 'latitude': lat,
                 'longitude': lon,
                 'confidence': confidence
+            })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/boundaries.geojson')
+def get_boundaries():
+    """Serve the boundaries GeoJSON file reprojected to WGS84 (public endpoint)."""
+    try:
+        if not Path(BOUNDARIES_FILE).exists():
+            return jsonify({'error': 'Boundary file not found'}), 404
+        
+        # Load and reproject to WGS84 for web mapping
+        gdf = gpd.read_file(BOUNDARIES_FILE)
+        if gdf.crs and gdf.crs != 'EPSG:4326':
+            gdf = gdf.to_crs('EPSG:4326')
+        
+        # Return as GeoJSON
+        return jsonify(json.loads(gdf.to_json()))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/reverse_geocode', methods=['POST'])
+def reverse_geocode():
+    """Get pcode information for a lat/lon coordinate (public endpoint)."""
+    try:
+        data = request.get_json() if request.is_json else request.form
+        lat = data.get('latitude') or data.get('lat')
+        lon = data.get('longitude') or data.get('lon')
+        
+        if lat is None or lon is None:
+            return jsonify({'error': 'Latitude and longitude required'}), 400
+        
+        try:
+            lat = float(lat)
+            lon = float(lon)
+        except ValueError:
+            return jsonify({'error': 'Invalid latitude or longitude format'}), 400
+        
+        # Load boundaries
+        boundaries = load_boundaries()
+        if boundaries is None:
+            return jsonify({'error': 'Boundary data not available'}), 500
+        
+        # Create a point from the coordinates
+        point = Point(lon, lat)
+        point_gdf = gpd.GeoDataFrame(
+            {'latitude': [lat], 'longitude': [lon]},
+            geometry=[point],
+            crs='EPSG:4326'
+        )
+        
+        # Perform spatial join
+        joined = spatial_join_boundaries(point_gdf, boundaries)
+        
+        # Extract the result
+        if len(joined) > 0:
+            row = joined.iloc[0]
+            response_data = {
+                'success': True,
+                'latitude': lat,
+                'longitude': lon,
+                'parish_pcode': row.get('ADM1_PCODE'),
+                'parish_name': row.get('ADM1_EN'),
+                'community_pcode': row.get('ADM2_PCODE'),
+                'community_name': row.get('ADM2_EN')
+            }
+            return jsonify(response_data)
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Could not match to administrative boundaries',
+                'latitude': lat,
+                'longitude': lon
             })
         
     except Exception as e:

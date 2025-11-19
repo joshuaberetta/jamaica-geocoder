@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Jamaica Address Geocoder</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
     <style>
         * {
             margin: 0;
@@ -517,6 +519,60 @@
             width: 100%;
             height: 100%;
         }
+        
+        .map-section {
+            margin-bottom: 32px;
+            padding: 24px;
+            background: #f8f9fa;
+            border-radius: 4px;
+            border: 1px solid #e1e4e8;
+        }
+        
+        #map {
+            height: 400px;
+            width: 100%;
+            border-radius: 4px;
+            border: 1px solid #d1d5da;
+            margin-top: 12px;
+        }
+        
+        .map-result {
+            display: none;
+            margin-top: 16px;
+            padding: 16px;
+            border-radius: 3px;
+            font-size: 14px;
+        }
+        
+        .map-result.success {
+            display: block;
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        
+        .map-result.error {
+            display: block;
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+        
+        .map-result .result-row {
+            margin: 6px 0;
+        }
+        
+        .map-result .result-label {
+            font-weight: 600;
+            display: inline-block;
+            min-width: 150px;
+        }
+        
+        .map-instructions {
+            color: #586069;
+            font-size: 13px;
+            margin-top: 8px;
+        }
     </style>
 </head>
 <body>
@@ -556,6 +612,18 @@
                 <button type="button" id="geocodeSingleBtn">Geocode</button>
             </div>
             <div class="single-result" id="singleResult"></div>
+        </div>
+        
+        <div class="divider">
+            <span>OR</span>
+        </div>
+        
+        <!-- Map Point Selection Section -->
+        <div class="map-section">
+            <h2>Select Point from Map</h2>
+            <p class="map-instructions">Click anywhere on the map to get P-code information for that location</p>
+            <div id="map"></div>
+            <div class="map-result" id="mapResult"></div>
         </div>
         
         <div class="divider">
@@ -654,6 +722,122 @@
     </div>
     
     <script>
+        // Initialize map
+        const map = L.map('map').setView([18.1096, -77.2975], 9); // Center on Jamaica
+        
+        // Add OpenStreetMap tiles
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors',
+            maxZoom: 19
+        }).addTo(map);
+        
+        // Load and display community boundaries
+        console.log('Fetching boundaries...');
+        fetch('/boundaries.geojson')
+            .then(response => {
+                console.log('Boundaries response status:', response.status);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                return response.json();
+            })
+            .then(data => {
+                console.log('Boundaries data loaded:', data.type, 'Features:', data.features?.length);
+                const boundaryLayer = L.geoJSON(data, {
+                    style: {
+                        color: '#4A90E2',
+                        weight: 2,
+                        opacity: 0.6,
+                        fillOpacity: 0.1
+                    },
+                    onEachFeature: function(feature, layer) {
+                        if (feature.properties) {
+                            const props = feature.properties;
+                            layer.bindTooltip(
+                                `<strong>${props.ADM2_EN || 'Unknown'}</strong><br>` +
+                                `${props.ADM1_EN || 'Unknown Parish'}<br>` +
+                                `<small>P-Code: ${props.ADM2_PCODE || 'N/A'}</small>`,
+                                { sticky: true }
+                            );
+                        }
+                    }
+                }).addTo(map);
+                console.log('Boundaries added to map');
+            })
+            .catch(error => {
+                console.error('Error loading boundaries:', error);
+            });
+        
+        // Add a marker that will be placed on click
+        let currentMarker = null;
+        const mapResult = document.getElementById('mapResult');
+        
+        // Handle map clicks
+        map.on('click', async function(e) {
+            const lat = e.latlng.lat;
+            const lon = e.latlng.lng;
+            
+            // Remove previous marker if exists
+            if (currentMarker) {
+                map.removeLayer(currentMarker);
+            }
+            
+            // Add new marker
+            currentMarker = L.marker([lat, lon]).addTo(map);
+            
+            // Show loading state
+            showMapResult('Loading P-code information...', null);
+            
+            try {
+                const response = await fetch('/reverse_geocode', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ latitude: lat, longitude: lon })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    showMapResult(`
+                        <div class="result-row"><span class="result-label">Latitude:</span> ${result.latitude.toFixed(6)}</div>
+                        <div class="result-row"><span class="result-label">Longitude:</span> ${result.longitude.toFixed(6)}</div>
+                        <div class="result-row"><span class="result-label">Parish (P-Code):</span> ${result.parish_pcode || 'N/A'}</div>
+                        <div class="result-row"><span class="result-label">Parish Name:</span> ${result.parish_name || 'N/A'}</div>
+                        <div class="result-row"><span class="result-label">Community (P-Code):</span> ${result.community_pcode || 'N/A'}</div>
+                        <div class="result-row"><span class="result-label">Community Name:</span> ${result.community_name || 'N/A'}</div>
+                    `, true);
+                    
+                    // Update marker popup
+                    currentMarker.bindPopup(`
+                        <strong>${result.parish_name || 'Unknown Parish'}</strong><br>
+                        ${result.community_name || 'Unknown Community'}<br>
+                        <small>P-Code: ${result.community_pcode || 'N/A'}</small>
+                    `).openPopup();
+                } else {
+                    showMapResult(result.error || 'Could not find P-code information for this location', false);
+                }
+            } catch (error) {
+                showMapResult('Error: ' + error.message, false);
+            }
+        });
+        
+        function showMapResult(html, success) {
+            mapResult.innerHTML = html;
+            if (success === null) {
+                // Loading state
+                mapResult.className = 'map-result';
+                mapResult.style.display = 'block';
+                mapResult.style.background = '#f8f9fa';
+                mapResult.style.border = '1px solid #e1e4e8';
+                mapResult.style.color = '#586069';
+            } else {
+                mapResult.className = 'map-result ' + (success ? 'success' : 'error');
+                mapResult.style.display = 'block';
+            }
+        }
+        
         // Single address elements (always available)
         const singleAddressInput = document.getElementById('singleAddress');
         const geocodeSingleBtn = document.getElementById('geocodeSingleBtn');
