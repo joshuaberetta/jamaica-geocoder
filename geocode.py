@@ -7,8 +7,9 @@ Uses Google Maps Geocoding API for accurate geocoding.
 import os
 import time
 import json
+import re
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 from urllib.parse import urlencode
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
@@ -25,13 +26,72 @@ load_dotenv()
 GOOGLE_MAPS_API_KEY = os.getenv('GOOGLE_MAPS_API_KEY', '')
 
 
+def parse_coordinates(text: str) -> Optional[Tuple[float, float]]:
+    """
+    Try to parse coordinates from a text string.
+    Supports formats like:
+    - "18.1234, -77.5678"
+    - "18.1234,-77.5678"
+    - "18.1234 -77.5678"
+    - "(18.1234, -77.5678)"
+    
+    Returns (latitude, longitude) or None if not valid coordinates.
+    """
+    if not text or pd.isna(text):
+        return None
+    
+    text = str(text).strip()
+    
+    # Remove parentheses if present
+    text = text.strip('()')
+    
+    # Try to match coordinate patterns
+    # Pattern: optional minus, digits, optional decimal point and digits, whitespace/comma, repeat
+    coord_pattern = r'^(-?\d+\.?\d*)\s*[,\s]\s*(-?\d+\.?\d*)$'
+    match = re.match(coord_pattern, text)
+    
+    if match:
+        try:
+            lat = float(match.group(1))
+            lon = float(match.group(2))
+            
+            # Validate Jamaica coordinates (roughly 17-19°N, 76-79°W)
+            # Accept both positive/negative longitude formats
+            if 17.0 <= lat <= 19.0:
+                # Normalize longitude to negative (West)
+                if lon > 0:
+                    lon = -lon
+                if -79.0 <= lon <= -76.0:
+                    return (lat, lon)
+            
+            # Also check if lat/lon are swapped
+            if 17.0 <= lon <= 19.0:
+                if lat > 0:
+                    lat = -lat
+                if -79.0 <= lat <= -76.0:
+                    return (lon, lat)  # Return swapped
+        except ValueError:
+            pass
+    
+    return None
+
+
 def geocode_address(full_address: str) -> Optional[Tuple[float, float, str]]:
     """
     Geocode a full address query string using Google Maps Geocoding API.
     The caller should include any contextual fields (e.g. name) in the query.
     Returns (latitude, longitude, confidence) or None if not found.
     Confidence is the location_type from Google: ROOFTOP, RANGE_INTERPOLATED, GEOMETRIC_CENTER, or APPROXIMATE.
+    
+    If the address is already in coordinate format (lat, lon), returns those coordinates
+    with confidence 'COORDINATES'.
     """
+    # First check if the address is already coordinates
+    coords = parse_coordinates(full_address)
+    if coords:
+        lat, lon = coords
+        return (lat, lon, 'COORDINATES')
+    
     if not GOOGLE_MAPS_API_KEY:
         print("Error: GOOGLE_MAPS_API_KEY not set. Please set it in your .env or environment.")
         return None
@@ -131,6 +191,25 @@ def geocode_dataframe(df: pd.DataFrame, address_column: str = 'address', delay: 
     for idx, row in df.iterrows():
         row_count += 1
         address = row.get(address_column, '')
+        
+        # Check if address is coordinates first
+        coords_from_address = parse_coordinates(address) if address and pd.notna(address) else None
+        
+        if coords_from_address:
+            # Address is already coordinates, use directly
+            lat, lon = coords_from_address
+            latitudes.append(lat)
+            longitudes.append(lon)
+            confidences.append('COORDINATES')
+            stats['successful'] += 1
+            print(f"[{row_count}/{len(df)}] {address}")
+            print(f"  → {lat:.6f}, {lon:.6f} (COORDINATES)")
+            
+            # Still respect rate limit for consistency
+            if row_count < len(df):
+                time.sleep(delay)
+            continue
+        
         # If the CSV has a 'name' column, include it in the query to improve matching
         name = row.get('name') if 'name' in df.columns else None
         parts = []
