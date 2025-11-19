@@ -4,7 +4,42 @@
 
 Improved geocoding success rate from **21%** to **92%** for challenging Jamaica addresses.
 
-## Changes Made
+## Latest Update (November 19, 2025)
+
+### Single Address Geocoding Feature
+Added a web UI feature to geocode individual addresses or GPS coordinates:
+
+**New Functionality:**
+- Input field for entering a single address or GPS coordinates
+- Real-time geocoding with immediate results display
+- Returns comprehensive location data including:
+  - Latitude and Longitude
+  - Geocoding confidence level
+  - **Parish P-Code** (ADM1_PCODE) - e.g., `JM01`
+  - **Parish Name** (ADM1_EN) - e.g., `Clarendon`
+  - **Community P-Code** (ADM2_PCODE) - e.g., `JM01001`
+  - **Community Name** (ADM2_EN) - e.g., `Ritchies`
+
+**Technical Changes:**
+1. **Backend (`web_app.py`)**:
+   - Added `/geocode_single` endpoint for single address processing
+   - Modified `/geocode` route to handle both single addresses and file uploads
+   - Returns structured JSON with parish and community administrative codes
+
+2. **Frontend (`templates/index.html`)**:
+   - Added single address input section above file upload
+   - New UI elements: text input field and geocode button
+   - Real-time result display with color-coded success/error states
+   - Supports Enter key for quick geocoding
+   - Visual divider separating single lookup from batch processing
+
+**User Experience:**
+- Two modes: Single address lookup OR batch file upload
+- Single lookup provides instant feedback
+- Results show both human-readable names and P-codes for integration
+- Maintains existing batch processing functionality
+
+## Previous Changes
 
 ### 1. Coordinate Detection
 - Added `parse_coordinates()` function to detect if address is already in coordinate format

@@ -72,6 +72,142 @@
             margin: 0 auto;
         }
         
+        h2 {
+            color: #2c3e50;
+            margin-bottom: 16px;
+            font-size: 18px;
+            font-weight: 500;
+        }
+        
+        .single-address-section {
+            margin-bottom: 32px;
+            padding: 24px;
+            background: #f8f9fa;
+            border-radius: 4px;
+            border: 1px solid #e1e4e8;
+        }
+        
+        .address-input-group {
+            display: flex;
+            gap: 12px;
+            margin-bottom: 16px;
+        }
+        
+        .address-input-group input[type="text"] {
+            flex: 1;
+            padding: 11px 12px;
+            border: 1px solid #d1d5da;
+            border-radius: 3px;
+            font-size: 14px;
+            font-family: inherit;
+            background: white;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        
+        .address-input-group input[type="text"]:focus {
+            outline: none;
+            border-color: #4A90E2;
+            box-shadow: 0 0 0 3px rgba(74, 144, 226, 0.1);
+        }
+        
+        .address-input-group button {
+            width: auto;
+            padding: 11px 24px;
+            white-space: nowrap;
+        }
+        
+        .single-result {
+            display: none;
+            padding: 16px;
+            border-radius: 3px;
+            font-size: 14px;
+        }
+        
+        .single-result.success {
+            display: block;
+            background: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        
+        .single-result.error {
+            display: block;
+            background: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+        
+        .single-result .result-row {
+            margin: 6px 0;
+        }
+        
+        .single-result .result-label {
+            font-weight: 600;
+            display: inline-block;
+            min-width: 150px;
+        }
+        
+        .divider {
+            text-align: center;
+            margin: 32px 0;
+            position: relative;
+        }
+        
+        .divider::before {
+            content: '';
+            position: absolute;
+            top: 50%;
+            left: 0;
+            right: 0;
+            height: 1px;
+            background: #e1e4e8;
+        }
+        
+        .divider span {
+            background: white;
+            padding: 0 16px;
+            color: #7f8c8d;
+            font-size: 13px;
+            position: relative;
+            z-index: 1;
+        }
+        
+        .login-prompt {
+            padding: 48px;
+            text-align: center;
+            background: #f8f9fa;
+            border: 2px dashed #d1d5da;
+            border-radius: 4px;
+            color: #586069;
+        }
+        
+        .login-prompt h3 {
+            color: #2c3e50;
+            margin-bottom: 12px;
+            font-size: 18px;
+        }
+        
+        .login-prompt p {
+            margin-bottom: 24px;
+            font-size: 14px;
+        }
+        
+        .login-prompt .btn-login {
+            display: inline-block;
+            padding: 12px 32px;
+            background: #4A90E2;
+            color: white;
+            text-decoration: none;
+            border-radius: 3px;
+            font-size: 14px;
+            font-weight: 500;
+            transition: background-color 0.2s;
+        }
+        
+        .login-prompt .btn-login:hover {
+            background: #357ABD;
+        }
+        
         .logout-btn {
             padding: 8px 16px;
             background: white;
@@ -401,13 +537,33 @@
             </div>
             <p class="tagline">Where data meets purpose</p>
         </div>
+        {% if logged_in %}
         <a href="/logout" class="logout-btn">Sign Out</a>
+        {% else %}
+        <a href="/login" class="logout-btn">Sign In</a>
+        {% endif %}
     </div>
     
     <div class="container">
         <h1>Jamaica Address Geocoder</h1>
-        <p class="subtitle">Upload a CSV file with addresses to geocode and match to administrative boundaries</p>
+        <p class="subtitle">Enter a single address or upload a CSV file with addresses to geocode and match to administrative boundaries</p>
         
+        <!-- Single Address Input Section -->
+        <div class="single-address-section">
+            <h2>Single Address Lookup</h2>
+            <div class="address-input-group">
+                <input type="text" id="singleAddress" placeholder="Enter address or GPS coordinates (e.g., '18.0179, -76.8099' or '123 Main St, Kingston')">
+                <button type="button" id="geocodeSingleBtn">Geocode</button>
+            </div>
+            <div class="single-result" id="singleResult"></div>
+        </div>
+        
+        <div class="divider">
+            <span>OR</span>
+        </div>
+        
+        <h2>Batch File Upload</h2>
+        {% if logged_in %}
         <form id="uploadForm" enctype="multipart/form-data">
             <div class="upload-area" id="uploadArea">
                 <div class="upload-icon">📄</div>
@@ -478,6 +634,13 @@
                 <li>UTF-8 encoding for CSV files</li>
             </ul>
         </div>
+        {% else %}
+        <div class="login-prompt">
+            <h3>🔐 Sign In Required</h3>
+            <p>Batch file processing requires authentication. Please sign in to upload and geocode multiple addresses.</p>
+            <a href="/login" class="btn-login">Sign In for Batch Processing</a>
+        </div>
+        {% endif %}
         
         <div class="footer">
             <span class="kobo-icon">
@@ -491,6 +654,12 @@
     </div>
     
     <script>
+        // Single address elements (always available)
+        const singleAddressInput = document.getElementById('singleAddress');
+        const geocodeSingleBtn = document.getElementById('geocodeSingleBtn');
+        const singleResult = document.getElementById('singleResult');
+        
+        // Batch upload elements (only if logged in)
         const uploadArea = document.getElementById('uploadArea');
         const fileInput = document.getElementById('fileInput');
         const fileName = document.getElementById('fileName');
@@ -504,8 +673,69 @@
         
         let lastDownloadData = null;
         
-        // Click to upload
-        uploadArea.addEventListener('click', () => fileInput.click());
+        // Single address geocoding
+        geocodeSingleBtn.addEventListener('click', async () => {
+            const address = singleAddressInput.value.trim();
+            
+            if (!address) {
+                showSingleResult('Please enter an address or GPS coordinates', false);
+                return;
+            }
+            
+            geocodeSingleBtn.disabled = true;
+            geocodeSingleBtn.textContent = 'Geocoding...';
+            singleResult.style.display = 'none';
+            
+            try {
+                const response = await fetch('/geocode_single', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ address: address })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    showSingleResult(`
+                        <div class="result-row"><span class="result-label">Address:</span> ${result.address}</div>
+                        <div class="result-row"><span class="result-label">Latitude:</span> ${result.latitude.toFixed(6)}</div>
+                        <div class="result-row"><span class="result-label">Longitude:</span> ${result.longitude.toFixed(6)}</div>
+                        <div class="result-row"><span class="result-label">Confidence:</span> ${result.confidence}</div>
+                        <div class="result-row"><span class="result-label">Parish (P-Code):</span> ${result.parish_pcode || 'N/A'}</div>
+                        <div class="result-row"><span class="result-label">Parish Name:</span> ${result.parish_name || 'N/A'}</div>
+                        <div class="result-row"><span class="result-label">Community (P-Code):</span> ${result.community_pcode || 'N/A'}</div>
+                        <div class="result-row"><span class="result-label">Community Name:</span> ${result.community_name || 'N/A'}</div>
+                    `, true);
+                } else {
+                    showSingleResult(result.error || 'Failed to geocode address', false);
+                }
+            } catch (error) {
+                showSingleResult('Error: ' + error.message, false);
+            } finally {
+                geocodeSingleBtn.disabled = false;
+                geocodeSingleBtn.textContent = 'Geocode';
+            }
+        });
+        
+        // Allow Enter key to trigger geocoding
+        singleAddressInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                geocodeSingleBtn.click();
+            }
+        });
+        
+        function showSingleResult(html, success) {
+            singleResult.innerHTML = html;
+            singleResult.className = 'single-result ' + (success ? 'success' : 'error');
+            singleResult.style.display = 'block';
+        }
+        
+        // Batch upload functionality (only if elements exist - user is logged in)
+        if (uploadArea && fileInput && uploadForm) {
+            // Click to upload
+            uploadArea.addEventListener('click', () => fileInput.click());
         
         // File selection
         fileInput.addEventListener('change', (e) => {
@@ -636,6 +866,7 @@
             errorDiv.textContent = `❌ ${message}`;
             errorDiv.style.display = 'block';
         }
+        } // End of batch upload functionality
     </script>
 </body>
 </html>

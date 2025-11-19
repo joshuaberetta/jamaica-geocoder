@@ -11,6 +11,7 @@ import os
 import io
 import pandas as pd
 import geopandas as gpd
+from shapely.geometry import Point
 from pathlib import Path
 import tempfile
 from dotenv import load_dotenv
@@ -73,17 +74,20 @@ def login():
 @app.route('/logout')
 def logout():
     session.pop('logged_in', None)
-    return redirect(url_for('login'))
+    return redirect(url_for('index'))
 
 @app.route('/')
-@login_required
 def index():
-    return render_template('index.html')
+    return render_template('index.html', logged_in=session.get('logged_in', False))
 
 @app.route('/geocode', methods=['POST'])
 @login_required
 def geocode():
     try:
+        # Check if this is a single address request
+        if request.is_json or request.form.get('single_address'):
+            return geocode_single()
+        
         # Check if file was uploaded
         if 'file' not in request.files:
             return jsonify({'error': 'No file uploaded'}), 400
@@ -174,6 +178,72 @@ def geocode():
             'filename': filename,
             'mimetype': mimetype
         })
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/geocode_single', methods=['POST'])
+def geocode_single():
+    """Geocode a single address or GPS coordinate (public endpoint)."""
+    try:
+        data = request.get_json() if request.is_json else request.form
+        address_input = data.get('address', '').strip()
+        
+        if not address_input:
+            return jsonify({'error': 'Address or GPS coordinates required'}), 400
+        
+        # Load boundaries
+        boundaries = load_boundaries()
+        if boundaries is None:
+            return jsonify({'error': 'Boundary data not available'}), 500
+        
+        # Geocode the address
+        result = geocode_address(address_input)
+        
+        if result is None:
+            return jsonify({
+                'success': False,
+                'error': 'Could not geocode the address',
+                'address': address_input
+            })
+        
+        lat, lon, confidence = result
+        
+        # Create a point and find which boundaries it falls in
+        point = Point(lon, lat)
+        point_gdf = gpd.GeoDataFrame(
+            {'address': [address_input], 'latitude': [lat], 'longitude': [lon], 'confidence': [confidence]},
+            geometry=[point],
+            crs='EPSG:4326'
+        )
+        
+        # Perform spatial join
+        joined = spatial_join_boundaries(point_gdf, boundaries)
+        
+        # Extract the result
+        if len(joined) > 0:
+            row = joined.iloc[0]
+            response_data = {
+                'success': True,
+                'address': address_input,
+                'latitude': lat,
+                'longitude': lon,
+                'confidence': confidence,
+                'parish_pcode': row.get('ADM1_PCODE'),
+                'parish_name': row.get('ADM1_EN'),
+                'community_pcode': row.get('ADM2_PCODE'),
+                'community_name': row.get('ADM2_EN')
+            }
+            return jsonify(response_data)
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Could not match to administrative boundaries',
+                'address': address_input,
+                'latitude': lat,
+                'longitude': lon,
+                'confidence': confidence
+            })
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
