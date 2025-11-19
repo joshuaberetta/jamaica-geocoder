@@ -20,6 +20,7 @@ __pycache__/
 !communities.geojson
 !odpem.geojson
 data/
+tmp/
 
 # IDE
 .vscode/

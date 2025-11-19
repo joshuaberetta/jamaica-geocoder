@@ -85,6 +85,8 @@ def geocode_address(full_address: str) -> Optional[Tuple[float, float, str]]:
     
     If the address is already in coordinate format (lat, lon), returns those coordinates
     with confidence 'COORDINATES'.
+    
+    Uses multiple fallback strategies to find approximate locations for vague addresses.
     """
     # First check if the address is already coordinates
     coords = parse_coordinates(full_address)
@@ -100,72 +102,179 @@ def geocode_address(full_address: str) -> Optional[Tuple[float, float, str]]:
     query = full_address.strip()
     if 'jamaica' not in query.lower():
         query = f"{query}, Jamaica"
-
-    params = {
-        'address': query,
-        'key': GOOGLE_MAPS_API_KEY,
-        'region': 'jm',  # Bias results to Jamaica
-        'components': 'country:JM'  # Restrict results to Jamaica only
+    
+    # Common spelling corrections for Jamaica place names
+    spelling_corrections = {
+        'morroon': 'Maroon Town',
+        'moroon': 'Maroon Town',
+        'morant': 'Morant Bay',
+        'portmore': 'Portmore',
+        'mandavilla': 'Mandeville',
+        'ochos rios': 'Ocho Rios',
+        'montigo bay': 'Montego Bay',
+        'jdf': 'Jamaica Defence Force Camp',  # Common military base reference
     }
+    
+    # Apply spelling corrections
+    query_lower = query.lower()
+    for typo, correction in spelling_corrections.items():
+        if typo in query_lower:
+            query = query_lower.replace(typo, correction) + ', Jamaica'
+            break
 
-    url = f"https://maps.googleapis.com/maps/api/geocode/json?{urlencode(params)}"
+    # Try different query strategies in order of preference
+    queries_to_try = [
+        query,  # Original query (possibly corrected)
+    ]
+    
+    # For vague addresses, try adding common modifiers
+    if any(word in query.lower() for word in ['orphanage', 'home', 'school', 'church', 'castle', 'outskirts']):
+        # Try without Jamaica to see if it's a known place
+        base = query.replace(', Jamaica', '').replace(',Jamaica', '').strip()
+        queries_to_try.append(f"{base}, Portland, Jamaica")  # Try with common parish
+        queries_to_try.append(f"{base}, St. Andrew, Jamaica")
+        queries_to_try.append(f"{base}, Kingston, Jamaica")
+    
+    best_result = None
+    best_quality = -1  # Track quality: 4=ROOFTOP, 3=RANGE_INTERPOLATED, 2=GEOMETRIC_CENTER, 1=APPROXIMATE, 0=vague
+    
+    for attempt_query in queries_to_try:
+        params = {
+            'address': attempt_query,
+            'key': GOOGLE_MAPS_API_KEY,
+            'region': 'jm',  # Bias results to Jamaica
+            'components': 'country:JM'  # Restrict results to Jamaica only
+        }
 
+        url = f"https://maps.googleapis.com/maps/api/geocode/json?{urlencode(params)}"
+
+        try:
+            with urlopen(url, timeout=10) as response:
+                data = json.loads(response.read().decode())
+
+                status = data.get('status')
+                if status == 'OK' and data.get('results'):
+                    result = data['results'][0]
+                    location = result['geometry']['location']
+                    geometry = result.get('geometry', {})
+                    location_type = geometry.get('location_type', 'UNKNOWN')
+                    
+                    # Verify the result is in Jamaica by checking country component
+                    address_components = result.get('address_components', [])
+                    is_jamaica = any(
+                        'country' in comp.get('types', []) and comp.get('short_name') == 'JM'
+                        for comp in address_components
+                    )
+                    
+                    if not is_jamaica:
+                        continue
+                    
+                    # Accept results with meaningful location data
+                    # We accept: specific addresses, localities (towns/villages), sub-localities,
+                    # neighborhoods, points of interest, and administrative areas
+                    acceptable_types = [
+                        'locality',           # Towns, cities, villages
+                        'sublocality',        # Neighborhoods within cities
+                        'neighborhood',       # Named neighborhoods
+                        'administrative_area_level_1',  # Parishes
+                        'administrative_area_level_2',  # Districts
+                        'administrative_area_level_3',  # Communities
+                        'postal_code',        # Postal codes
+                        'route',              # Street names
+                        'street_address',     # Full street addresses
+                        'premise',            # Buildings
+                        'point_of_interest',  # POIs like orphanages, schools, etc.
+                        'establishment',      # Named establishments
+                        'natural_feature'     # Geographic features
+                    ]
+                    
+                    has_specific_location = any(
+                        any(t in comp.get('types', []) for t in acceptable_types)
+                        for comp in address_components
+                    )
+                    
+                    # Even if no specific location, accept if it has parish-level data (better than nothing)
+                    has_parish = any(
+                        'administrative_area_level_1' in comp.get('types', [])
+                        for comp in address_components
+                    )
+                    
+                    if not has_specific_location and not has_parish:
+                        continue
+                    
+                    lat = float(location['lat'])
+                    lon = float(location['lng'])
+                    
+                    # Additional check: Jamaica coordinates are roughly 17-19°N, 76-79°W
+                    if not (17.0 <= lat <= 19.0 and -79.0 <= lon <= -76.0):
+                        continue
+                    
+                    # Rank result quality
+                    quality = 0
+                    if location_type == 'ROOFTOP':
+                        quality = 4
+                    elif location_type == 'RANGE_INTERPOLATED':
+                        quality = 3
+                    elif location_type == 'GEOMETRIC_CENTER':
+                        quality = 2
+                    elif location_type == 'APPROXIMATE':
+                        if has_specific_location:
+                            quality = 1  # Acceptable approximate location
+                        else:
+                            quality = 0  # Too vague (just parish)
+                    
+                    # Keep the best result
+                    if quality > best_quality:
+                        best_quality = quality
+                        best_result = (lat, lon, location_type)
+                        
+                        # If we found a high-quality result, stop trying
+                        if quality >= 2:
+                            break
+                
+                elif status == 'ZERO_RESULTS':
+                    continue
+                    
+        except (URLError, HTTPError, json.JSONDecodeError) as e:
+            print(f"  Error geocoding '{attempt_query}': {e}")
+            continue
+        except Exception as e:
+            print(f"  Unexpected error geocoding '{attempt_query}': {e}")
+            continue
+    
+    # Return best result found, or None
+    if best_result and best_quality >= 1:
+        return best_result
+    
+    # Final fallback: try Google Places API Text Search for very vague queries
+    # This is useful for place names that geocoding doesn't recognize
     try:
-        with urlopen(url, timeout=10) as response:
+        places_params = {
+            'query': full_address,
+            'key': GOOGLE_MAPS_API_KEY,
+            'region': 'jm',
+        }
+        
+        places_url = f"https://maps.googleapis.com/maps/api/place/textsearch/json?{urlencode(places_params)}"
+        
+        with urlopen(places_url, timeout=10) as response:
             data = json.loads(response.read().decode())
-
-            status = data.get('status')
-            if status == 'OK' and data.get('results'):
+            
+            if data.get('status') == 'OK' and data.get('results'):
                 result = data['results'][0]
                 location = result['geometry']['location']
-                geometry = result.get('geometry', {})
-                location_type = geometry.get('location_type', 'UNKNOWN')
-                
-                # Verify the result is in Jamaica by checking country component
-                address_components = result.get('address_components', [])
-                is_jamaica = any(
-                    'country' in comp.get('types', []) and comp.get('short_name') == 'JM'
-                    for comp in address_components
-                )
-                
-                if not is_jamaica:
-                    print(f"  Result outside Jamaica, skipping")
-                    return None
-                
-                # Check if result has meaningful address components beyond just country
-                # We want at least a locality or administrative area
-                has_specific_location = any(
-                    any(t in comp.get('types', []) for t in ['locality', 'administrative_area_level_1', 
-                                                               'administrative_area_level_2', 'postal_code',
-                                                               'route', 'street_address', 'premise'])
-                    for comp in address_components
-                )
-                
-                if not has_specific_location:
-                    print(f"  Result lacks specific location details, rejecting")
-                    return None
                 
                 lat = float(location['lat'])
                 lon = float(location['lng'])
                 
-                # Additional check: Jamaica coordinates are roughly 17-19°N, 76-79°W
-                if not (17.0 <= lat <= 19.0 and -79.0 <= lon <= -76.0):
-                    print(f"  Coordinates outside Jamaica bounds, skipping")
-                    return None
-                
-                return (lat, lon, location_type)
-            elif status == 'ZERO_RESULTS':
-                return None
-            else:
-                print(f"  API returned status: {status}")
-                return None
-
-    except (URLError, HTTPError, json.JSONDecodeError) as e:
-        print(f"  Error geocoding '{full_address}': {e}")
-        return None
+                # Verify Jamaica bounds
+                if 17.0 <= lat <= 19.0 and -79.0 <= lon <= -76.0:
+                    print(f"  Found via Places API: {result.get('name')}")
+                    return (lat, lon, 'PLACES_API')
     except Exception as e:
-        print(f"  Unexpected error geocoding '{full_address}': {e}")
-        return None
+        pass  # Silently fail Places API fallback
+    
+    return None
 
 
 def geocode_dataframe(df: pd.DataFrame, address_column: str = 'address', delay: float = 0.1) -> Tuple[gpd.GeoDataFrame, dict]:
