@@ -876,42 +876,149 @@
             maxZoom: 19
         }).addTo(map);
         
-        // Load and display community boundaries
-        console.log('Fetching boundaries...');
-        fetch('/boundaries.geojson')
-            .then(response => {
-                console.log('Boundaries response status:', response.status);
+        // Cache key and version for localStorage
+        const BOUNDARY_CACHE_KEY = 'jamaica_boundaries_v3';
+        const BOUNDARY_ETAG_KEY = 'jamaica_boundaries_etag_v3';
+        
+        // Track if boundaries are already on map
+        let boundariesLoaded = false;
+        
+        // Simple compression using LZString-like approach (lightweight)
+        function compressToLocalStorage(key, data) {
+            try {
+                // For very large data, we'll use sessionStorage instead
+                // sessionStorage has similar size limits but clears on tab close
+                // which is fine since we'll refetch anyway
+                sessionStorage.setItem(key, data);
+                return true;
+            } catch (e) {
+                console.warn('SessionStorage failed, boundary data too large to cache');
+                return false;
+            }
+        }
+        
+        function getFromLocalStorage(key) {
+            return sessionStorage.getItem(key);
+        }
+        
+        function removeFromLocalStorage(key) {
+            sessionStorage.removeItem(key);
+        }
+        
+        // Function to add boundaries to map
+        function addBoundariesToMap(data) {
+            if (boundariesLoaded) {
+                console.log('Boundaries already loaded, skipping');
+                return;
+            }
+            
+            console.log('Adding boundaries to map, features:', data.features?.length);
+            const boundaryLayer = L.geoJSON(data, {
+                style: {
+                    color: '#4A90E2',
+                    weight: 2,
+                    opacity: 0.6,
+                    fillOpacity: 0.1
+                },
+                onEachFeature: function(feature, layer) {
+                    if (feature.properties) {
+                        const props = feature.properties;
+                        layer.bindTooltip(
+                            `<strong>${props.ADM2_EN || 'Unknown'}</strong><br>` +
+                            `${props.ADM1_EN || 'Unknown Parish'}<br>` +
+                            `<small>P-Code: ${props.ADM2_PCODE || 'N/A'}</small>`,
+                            { sticky: true }
+                        );
+                    }
+                }
+            }).addTo(map);
+            boundariesLoaded = true;
+            console.log('✓ Boundaries added to map successfully');
+        }
+        
+        // Load and display community boundaries with caching
+        async function loadBoundaries() {
+            console.log('Loading boundaries...');
+            
+            // Try to load from cache first (using sessionStorage for large data)
+            const cachedData = getFromLocalStorage(BOUNDARY_CACHE_KEY);
+            const cachedETag = localStorage.getItem(BOUNDARY_ETAG_KEY);
+            
+            let cacheDisplayed = false;
+            if (cachedData) {
+                console.log('Found cached boundaries, displaying...');
+                try {
+                    const data = JSON.parse(cachedData);
+                    addBoundariesToMap(data);
+                    cacheDisplayed = true;
+                } catch (error) {
+                    console.error('Error parsing cached boundaries:', error);
+                    removeFromLocalStorage(BOUNDARY_CACHE_KEY);
+                    localStorage.removeItem(BOUNDARY_ETAG_KEY);
+                }
+            }
+            
+            // Fetch from server
+            try {
+                const headers = {};
+                if (cachedETag) {
+                    headers['If-None-Match'] = cachedETag;
+                }
+                
+                const response = await fetch('/boundaries.geojson', { headers });
+                console.log('Server response:', response.status);
+                
+                if (response.status === 304) {
+                    console.log('✓ Boundaries up to date (304)');
+                    // If we didn't display cache earlier (shouldn't happen), we have a problem
+                    if (!cacheDisplayed) {
+                        console.warn('Got 304 but no cache was available, clearing cache and retrying...');
+                        removeFromLocalStorage(BOUNDARY_CACHE_KEY);
+                        localStorage.removeItem(BOUNDARY_ETAG_KEY);
+                        // Retry without ETag
+                        return loadBoundaries();
+                    }
+                    return;
+                }
+                
                 if (!response.ok) {
                     throw new Error(`HTTP error! status: ${response.status}`);
                 }
-                return response.json();
-            })
-            .then(data => {
-                console.log('Boundaries data loaded:', data.type, 'Features:', data.features?.length);
-                const boundaryLayer = L.geoJSON(data, {
-                    style: {
-                        color: '#4A90E2',
-                        weight: 2,
-                        opacity: 0.6,
-                        fillOpacity: 0.1
-                    },
-                    onEachFeature: function(feature, layer) {
-                        if (feature.properties) {
-                            const props = feature.properties;
-                            layer.bindTooltip(
-                                `<strong>${props.ADM2_EN || 'Unknown'}</strong><br>` +
-                                `${props.ADM1_EN || 'Unknown Parish'}<br>` +
-                                `<small>P-Code: ${props.ADM2_PCODE || 'N/A'}</small>`,
-                                { sticky: true }
-                            );
-                        }
-                    }
-                }).addTo(map);
-                console.log('Boundaries added to map');
-            })
-            .catch(error => {
+                
+                const text = await response.text();
+                const data = JSON.parse(text);
+                
+                // Store ETag and data
+                const etag = response.headers.get('ETag');
+                if (etag) {
+                    localStorage.setItem(BOUNDARY_ETAG_KEY, etag);
+                }
+                
+                // Cache in sessionStorage (cleared on tab close, but that's fine)
+                if (compressToLocalStorage(BOUNDARY_CACHE_KEY, text)) {
+                    console.log('✓ Boundaries cached in session');
+                }
+                
+                // Add to map if not already loaded from cache
+                addBoundariesToMap(data);
+                
+            } catch (error) {
                 console.error('Error loading boundaries:', error);
-            });
+                // If we have cache and server fails, at least we have the map
+                if (!cacheDisplayed && cachedData) {
+                    console.log('Server failed but using cached data as fallback');
+                    try {
+                        const data = JSON.parse(cachedData);
+                        addBoundariesToMap(data);
+                    } catch (e) {
+                        console.error('Cache fallback also failed:', e);
+                    }
+                }
+            }
+        }
+        
+        // Load boundaries on page load
+        loadBoundaries();
         
         // Add a marker that will be placed on click
         let currentMarker = null;

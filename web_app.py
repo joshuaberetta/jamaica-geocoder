@@ -4,7 +4,7 @@ Web interface for Jamaica address geocoding.
 Upload CSV, get geocoded results with admin boundaries.
 """
 
-from flask import Flask, render_template, request, send_file, jsonify, redirect, url_for, session
+from flask import Flask, render_template, request, send_file, jsonify, redirect, url_for, session, make_response
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 import os
@@ -17,6 +17,7 @@ from pathlib import Path
 import tempfile
 from dotenv import load_dotenv
 from functools import wraps
+import hashlib
 
 # Import geocoding functions from geocode.py
 from geocode import geocode_address, geocode_dataframe, spatial_join_boundaries
@@ -45,13 +46,21 @@ def login_required(f):
 # Load boundaries once at startup
 BOUNDARIES_FILE = os.getenv('BOUNDARIES_FILE', 'odpem.geojson')
 boundaries_gdf = None
+boundaries_geojson_cache = None
+boundaries_etag = None
 
 def load_boundaries():
-    global boundaries_gdf
+    global boundaries_gdf, boundaries_geojson_cache, boundaries_etag
     if boundaries_gdf is None and Path(BOUNDARIES_FILE).exists():
         print(f"Loading boundaries from {BOUNDARIES_FILE}...")
         boundaries_gdf = gpd.read_file(BOUNDARIES_FILE)
         print(f"Loaded {len(boundaries_gdf)} boundary features")
+        
+        # Pre-compute GeoJSON and ETag for caching
+        gdf_wgs84 = boundaries_gdf.to_crs('EPSG:4326') if boundaries_gdf.crs and boundaries_gdf.crs != 'EPSG:4326' else boundaries_gdf
+        boundaries_geojson_cache = gdf_wgs84.to_json()
+        boundaries_etag = hashlib.md5(boundaries_geojson_cache.encode()).hexdigest()
+        print(f"Cached boundaries GeoJSON (ETag: {boundaries_etag})")
     return boundaries_gdf
 
 @app.route('/login', methods=['GET', 'POST'])
@@ -251,18 +260,26 @@ def geocode_single():
 
 @app.route('/boundaries.geojson')
 def get_boundaries():
-    """Serve the boundaries GeoJSON file reprojected to WGS84 (public endpoint)."""
+    """Serve the boundaries GeoJSON file reprojected to WGS84 (public endpoint) with caching."""
     try:
-        if not Path(BOUNDARIES_FILE).exists():
+        # Load boundaries if not already loaded
+        load_boundaries()
+        
+        if boundaries_geojson_cache is None:
             return jsonify({'error': 'Boundary file not found'}), 404
         
-        # Load and reproject to WGS84 for web mapping
-        gdf = gpd.read_file(BOUNDARIES_FILE)
-        if gdf.crs and gdf.crs != 'EPSG:4326':
-            gdf = gdf.to_crs('EPSG:4326')
+        # Check if client has cached version (ETag)
+        client_etag = request.headers.get('If-None-Match')
+        if client_etag and client_etag == f'"{boundaries_etag}"':
+            return '', 304  # Not Modified
         
-        # Return as GeoJSON
-        return jsonify(json.loads(gdf.to_json()))
+        # Create response with caching headers
+        response = make_response(boundaries_geojson_cache)
+        response.headers['Content-Type'] = 'application/json'
+        response.headers['ETag'] = f'"{boundaries_etag}"'
+        response.headers['Cache-Control'] = 'public, max-age=86400'  # Cache for 24 hours
+        
+        return response
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
