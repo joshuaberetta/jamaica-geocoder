@@ -892,6 +892,39 @@
                         <div class="result-row"><span class="result-label">Community (P-Code):</span> ${result.community_pcode || 'N/A'}</div>
                         <div class="result-row"><span class="result-label">Community Name:</span> ${result.community_name || 'N/A'}</div>
                     `, true);
+
+                    // Add marker to map and center on the location
+                    const lat = result.latitude;
+                    const lon = result.longitude;
+
+                    // Remove previous marker if exists
+                    if (currentMarker) {
+                        map.removeLayer(currentMarker);
+                    }
+
+                    // Add new marker at the geocoded location
+                    currentMarker = L.marker([lat, lon]).addTo(map);
+
+                    // Add popup to the marker with location details
+                    currentMarker.bindPopup(`
+                        <strong>${result.parish_name || 'Unknown Parish'}</strong><br>
+                        ${result.community_name || 'Unknown Community'}<br>
+                        <small>P-Code: ${result.community_pcode || 'N/A'}</small><br>
+                        <small>${result.address}</small>
+                    `).openPopup();
+
+                    // Center and zoom the map to show the marker
+                    map.setView([lat, lon], 14);
+
+                    // Update the map result display
+                    showMapResult(`
+                        <div class="result-row"><span class="result-label">Latitude:</span> ${lat.toFixed(6)}</div>
+                        <div class="result-row"><span class="result-label">Longitude:</span> ${lon.toFixed(6)}</div>
+                        <div class="result-row"><span class="result-label">Parish (P-Code):</span> ${result.parish_pcode || 'N/A'}</div>
+                        <div class="result-row"><span class="result-label">Parish Name:</span> ${result.parish_name || 'N/A'}</div>
+                        <div class="result-row"><span class="result-label">Community (P-Code):</span> ${result.community_pcode || 'N/A'}</div>
+                        <div class="result-row"><span class="result-label">Community Name:</span> ${result.community_name || 'N/A'}</div>
+                    `, true);
                 } else {
                     showSingleResult(result.error || 'Failed to geocode address', false);
                 }
