@@ -573,6 +573,151 @@
             font-size: 13px;
             margin-top: 8px;
         }
+
+        /* Responsive styles for mobile devices */
+        @media (max-width: 768px) {
+            .container {
+                padding: 24px 20px;
+            }
+
+            .header {
+                padding: 16px 20px;
+            }
+
+            .single-address-section {
+                padding: 16px;
+            }
+
+            .map-section {
+                padding: 16px;
+            }
+
+            #map {
+                height: 300px;
+            }
+
+            .result-label {
+                min-width: 120px !important;
+            }
+        }
+
+        @media (max-width: 480px) {
+            .container {
+                padding: 16px 12px;
+                border-radius: 0;
+            }
+
+            .header {
+                padding: 12px 16px;
+            }
+
+            .logo-container {
+                gap: 8px;
+            }
+
+            .logo-row {
+                gap: 8px;
+            }
+
+            .logo-placeholder {
+                width: 100px;
+                height: 28px;
+            }
+
+            .tagline {
+                font-size: 9px;
+            }
+
+            h1 {
+                font-size: 20px;
+            }
+
+            h2 {
+                font-size: 16px;
+                margin-bottom: 12px;
+            }
+
+            .subtitle {
+                font-size: 13px;
+                margin-bottom: 24px;
+            }
+
+            .single-address-section {
+                padding: 12px;
+                margin-bottom: 24px;
+            }
+
+            .address-input-group {
+                flex-direction: column;
+                gap: 8px;
+            }
+
+            .address-input-group input[type="text"] {
+                width: 100%;
+                font-size: 16px; /* Prevents zoom on iOS */
+            }
+
+            .address-input-group button {
+                width: 100%;
+                padding: 12px 16px;
+            }
+
+            .single-result,
+            .map-result {
+                font-size: 13px;
+            }
+
+            .result-label {
+                min-width: 100px !important;
+                font-size: 12px;
+            }
+
+            .map-section {
+                padding: 12px;
+            }
+
+            #map {
+                height: 250px;
+            }
+
+            .map-instructions {
+                font-size: 12px;
+            }
+
+            .divider {
+                margin: 24px 0;
+            }
+
+            .upload-section {
+                padding: 12px;
+            }
+
+            .upload-area {
+                padding: 32px 16px;
+            }
+
+            .upload-icon {
+                font-size: 36px;
+            }
+
+            .upload-area p {
+                font-size: 13px;
+            }
+
+            .options {
+                grid-template-columns: 1fr;
+                gap: 16px;
+            }
+
+            .login-prompt {
+                padding: 32px 16px;
+            }
+
+            .logout-btn {
+                padding: 6px 12px;
+                font-size: 12px;
+            }
+        }
     </style>
 </head>
 <body>
