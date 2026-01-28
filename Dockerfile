@@ -1,0 +1,71 @@
+# Humanitarian Geocoder - Multi-stage Docker Build
+FROM python:3.11-slim as builder
+
+# Install build dependencies for GDAL
+RUN apt-get update && apt-get install -y \
+    gdal-bin \
+    libgdal-dev \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set GDAL environment variables
+ENV GDAL_CONFIG=/usr/bin/gdal-config
+ENV CPLUS_INCLUDE_PATH=/usr/include/gdal
+ENV C_INCLUDE_PATH=/usr/include/gdal
+
+# Create working directory
+WORKDIR /app
+
+# Copy requirements and install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
+
+# Production stage
+FROM python:3.11-slim
+
+# Install runtime dependencies for GDAL
+RUN apt-get update && apt-get install -y \
+    gdal-bin \
+    libgdal-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set GDAL environment variables
+ENV GDAL_CONFIG=/usr/bin/gdal-config
+ENV PYTHONUNBUFFERED=1
+
+# Create non-root user
+RUN useradd -m -u 1000 appuser
+
+# Create working directory
+WORKDIR /app
+
+# Copy Python packages from builder
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
+
+# Copy application files
+COPY --chown=appuser:appuser geocode.py .
+COPY --chown=appuser:appuser web_app.py .
+COPY --chown=appuser:appuser run_web.sh .
+COPY --chown=appuser:appuser countries/ ./countries/
+COPY --chown=appuser:appuser boundaries/ ./boundaries/
+COPY --chown=appuser:appuser templates/ ./templates/
+COPY --chown=appuser:appuser logos/ ./logos/
+
+# Make run script executable
+RUN chmod +x run_web.sh
+
+# Switch to non-root user
+USER appuser
+
+# Expose port
+EXPOSE 5000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:5000/health').read()"
+
+# Run the application
+CMD ["./run_web.sh"]

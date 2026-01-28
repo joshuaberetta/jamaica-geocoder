@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Jamaica Address Geocoder</title>
+    <title>Humanitarian Geocoder</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
     <style>
@@ -734,7 +734,7 @@
                         </g>
                     </svg>
                 </div>
-                <span style="color: #7f8c8d; font-size: 14px;">Jamaica Address Geocoder</span>
+                <span style="color: #7f8c8d; font-size: 14px;">Humanitarian Geocoder</span>
             </div>
             <p class="tagline">Where data meets purpose</p>
         </div>
@@ -746,8 +746,18 @@
     </div>
     
     <div class="container">
-        <h1>Jamaica Address Geocoder</h1>
+        <h1>Humanitarian Geocoder</h1>
         <p class="subtitle">Enter a single address or upload a CSV file with addresses to geocode and match to administrative boundaries</p>
+        
+        <!-- Country Selection -->
+        <div style="margin-bottom: 24px; padding: 16px; background: #f8f9fa; border-radius: 4px; border: 1px solid #e1e4e8;">
+            <label for="countrySelect" style="display: block; font-weight: 600; color: #2c3e50; margin-bottom: 8px;">Select Country:</label>
+            <select id="countrySelect" style="width: 100%; padding: 11px 12px; border: 1px solid #d1d5da; border-radius: 3px; font-size: 14px; background: white; cursor: pointer;">
+                {% for country in countries %}
+                <option value="{{ country.key }}">{{ country.name }}</option>
+                {% endfor %}
+            </select>
+        </div>
         
         <!-- Single Address Input Section -->
         <div class="single-address-section">
@@ -867,18 +877,129 @@
     </div>
     
     <script>
-        // Initialize map
-        const map = L.map('map').setView([18.1096, -77.2975], 9); // Center on Jamaica
+        // Country configurations - fetched from backend
+        let countryConfigs = {};
         
-        // Add OpenStreetMap tiles
-        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-            attribution: '© OpenStreetMap contributors',
-            maxZoom: 19
-        }).addTo(map);
+        // Get country from URL parameter or default to jamaica
+        const urlParams = new URLSearchParams(window.location.search);
+        let currentCountry = urlParams.get('country') || 'jamaica';
+        let map;
         
-        // Cache key and version for localStorage
-        const BOUNDARY_CACHE_KEY = 'jamaica_boundaries_v3';
-        const BOUNDARY_ETAG_KEY = 'jamaica_boundaries_etag_v3';
+        // Initialize map (will be centered dynamically)
+        function initializeMap() {
+            // Check if map container exists
+            const mapContainer = document.getElementById('map');
+            if (!mapContainer) {
+                console.error('Map container not found!');
+                return;
+            }
+            
+            // Check if map is already initialized
+            if (map !== undefined && map !== null) { 
+                map.remove(); 
+            }
+            
+            map = L.map('map').setView([18.1096, -77.2975], 9);
+            
+            // Add OpenStreetMap tiles
+            L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                attribution: '© OpenStreetMap contributors',
+                maxZoom: 19
+            }).addTo(map);
+            
+            // Re-bind click handler
+            map.on('click', handleMapClick);
+        }
+        
+        // Extracted click handler
+        async function handleMapClick(e) {
+            const lat = e.latlng.lat;
+            const lon = e.latlng.lng;
+            
+            // Remove previous marker if exists
+            if (currentMarker) {
+                map.removeLayer(currentMarker);
+            }
+            
+            // Add new marker
+            currentMarker = L.marker([lat, lon]).addTo(map);
+            
+            // Show loading state
+            showMapResult('Loading P-code information...', null);
+            
+            try {
+                const response = await fetch('/reverse_geocode', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ 
+                        latitude: lat, 
+                        longitude: lon,
+                        country: currentCountry
+                    })
+                });
+                
+                const result = await response.json();
+                
+                if (result.success) {
+                    // Use labels from API response (already includes country-specific labels)
+                    const admin1Label = result.admin1_label || 'Admin Level 1';
+                    const admin2Label = result.admin2_label || 'Admin Level 2';
+                    
+                    showMapResult(`
+                        <div class="result-row"><span class="result-label">Latitude:</span> ${result.latitude.toFixed(6)}</div>
+                        <div class="result-row"><span class="result-label">Longitude:</span> ${result.longitude.toFixed(6)}</div>
+                        <div class="result-row"><span class="result-label">${admin1Label} (P-Code):</span> ${result.admin1_pcode || 'N/A'}</div>
+                        <div class="result-row"><span class="result-label">${admin1Label} Name:</span> ${result.admin1_name || 'N/A'}</div>
+                        <div class="result-row"><span class="result-label">${admin2Label} (P-Code):</span> ${result.admin2_pcode || 'N/A'}</div>
+                        <div class="result-row"><span class="result-label">${admin2Label} Name:</span> ${result.admin2_name || 'N/A'}</div>
+                    `, true);
+                    
+                    // Update marker popup
+                    currentMarker.bindPopup(`
+                        <strong>${result.admin1_name || `Unknown ${admin1Label}`}</strong><br>
+                        ${result.admin2_name || `Unknown ${admin2Label}`}<br>
+                        <small>P-Code: ${result.admin2_pcode || 'N/A'}</small>
+                    `).openPopup();
+                } else {
+                    showMapResult(result.error || 'Could not find P-code information for this location', false);
+                }
+            } catch (error) {
+                showMapResult('Error: ' + error.message, false);
+            }
+        }
+        
+        // Fetch country configurations on page load
+        async function loadCountryConfigs() {
+            try {
+                const response = await fetch('/countries');
+                const countries = await response.json();
+                countries.forEach(country => {
+                    countryConfigs[country.key] = country;
+                });
+                // Center map on initial country
+                centerMapOnCountry(currentCountry);
+            } catch (error) {
+                console.error('Failed to load country configs:', error);
+            }
+        }
+        
+        // Center map on selected country
+        function centerMapOnCountry(countryKey) {
+            const config = countryConfigs[countryKey];
+            if (config && config.map_center) {
+                map.setView([config.map_center.lat, config.map_center.lon], config.map_center.zoom);
+            }
+        }
+        
+        // Cache keys - will be country-specific
+        function getBoundaryCacheKey(country) {
+            return `${country}_boundaries_v4`;
+        }
+        function getBoundaryEtagKey(country) {
+            return `${country}_boundaries_etag_v4`;
+        }
         
         // Track if boundaries are already on map
         let boundariesLoaded = false;
@@ -905,15 +1026,23 @@
             sessionStorage.removeItem(key);
         }
         
+        // Store current boundary layer for removal on country change
+        let currentBoundaryLayer = null;
+        
         // Function to add boundaries to map
         function addBoundariesToMap(data) {
-            if (boundariesLoaded) {
-                console.log('Boundaries already loaded, skipping');
-                return;
+            // Remove existing boundary layer if present
+            if (currentBoundaryLayer) {
+                map.removeLayer(currentBoundaryLayer);
+                currentBoundaryLayer = null;
             }
             
             console.log('Adding boundaries to map, features:', data.features?.length);
-            const boundaryLayer = L.geoJSON(data, {
+            
+            // Get current country config for field mapping
+            const config = countryConfigs[currentCountry];
+            
+            currentBoundaryLayer = L.geoJSON(data, {
                 style: {
                     color: '#4A90E2',
                     weight: 2,
@@ -923,10 +1052,21 @@
                 onEachFeature: function(feature, layer) {
                     if (feature.properties) {
                         const props = feature.properties;
+                        
+                        // Get field names from config or default to Jamaica (legacy support)
+                        const level1NameField = config?.admin_levels?.level1?.name_field || 'ADM1_EN';
+                        const level2NameField = config?.admin_levels?.level2?.name_field || 'ADM2_EN';
+                        const level2PcodeField = config?.admin_levels?.level2?.pcode_field || 'ADM2_PCODE';
+                        const level1Label = config?.admin_levels?.level1?.label || 'Parish';
+                        
+                        const level1Name = props[level1NameField] || `Unknown ${level1Label}`;
+                        const level2Name = props[level2NameField] || 'Unknown';
+                        const pcode = props[level2PcodeField] || 'N/A';
+                        
                         layer.bindTooltip(
-                            `<strong>${props.ADM2_EN || 'Unknown'}</strong><br>` +
-                            `${props.ADM1_EN || 'Unknown Parish'}<br>` +
-                            `<small>P-Code: ${props.ADM2_PCODE || 'N/A'}</small>`,
+                            `<strong>${level2Name}</strong><br>` +
+                            `${level1Name}<br>` +
+                            `<small>P-Code: ${pcode}</small>`,
                             { sticky: true }
                         );
                     }
@@ -937,12 +1077,15 @@
         }
         
         // Load and display community boundaries with caching
-        async function loadBoundaries() {
-            console.log('Loading boundaries...');
+        async function loadBoundaries(country = 'jamaica') {
+            console.log(`Loading boundaries for ${country}...`);
+            
+            const cacheKey = getBoundaryCacheKey(country);
+            const etagKey = getBoundaryEtagKey(country);
             
             // Try to load from cache first (using sessionStorage for large data)
-            const cachedData = getFromLocalStorage(BOUNDARY_CACHE_KEY);
-            const cachedETag = localStorage.getItem(BOUNDARY_ETAG_KEY);
+            const cachedData = getFromLocalStorage(cacheKey);
+            const cachedETag = localStorage.getItem(etagKey);
             
             let cacheDisplayed = false;
             if (cachedData) {
@@ -953,8 +1096,8 @@
                     cacheDisplayed = true;
                 } catch (error) {
                     console.error('Error parsing cached boundaries:', error);
-                    removeFromLocalStorage(BOUNDARY_CACHE_KEY);
-                    localStorage.removeItem(BOUNDARY_ETAG_KEY);
+                    removeFromLocalStorage(cacheKey);
+                    localStorage.removeItem(etagKey);
                 }
             }
             
@@ -965,7 +1108,7 @@
                     headers['If-None-Match'] = cachedETag;
                 }
                 
-                const response = await fetch('/boundaries.geojson', { headers });
+                const response = await fetch(`/boundaries.geojson?country=${country}`, { headers });
                 console.log('Server response:', response.status);
                 
                 if (response.status === 304) {
@@ -973,10 +1116,10 @@
                     // If we didn't display cache earlier (shouldn't happen), we have a problem
                     if (!cacheDisplayed) {
                         console.warn('Got 304 but no cache was available, clearing cache and retrying...');
-                        removeFromLocalStorage(BOUNDARY_CACHE_KEY);
-                        localStorage.removeItem(BOUNDARY_ETAG_KEY);
+                        removeFromLocalStorage(cacheKey);
+                        localStorage.removeItem(etagKey);
                         // Retry without ETag
-                        return loadBoundaries();
+                        return loadBoundaries(country);
                     }
                     return;
                 }
@@ -991,11 +1134,11 @@
                 // Store ETag and data
                 const etag = response.headers.get('ETag');
                 if (etag) {
-                    localStorage.setItem(BOUNDARY_ETAG_KEY, etag);
+                    localStorage.setItem(etagKey, etag);
                 }
                 
                 // Cache in sessionStorage (cleared on tab close, but that's fine)
-                if (compressToLocalStorage(BOUNDARY_CACHE_KEY, text)) {
+                if (compressToLocalStorage(cacheKey, text)) {
                     console.log('✓ Boundaries cached in session');
                 }
                 
@@ -1017,63 +1160,90 @@
             }
         }
         
-        // Load boundaries on page load
-        loadBoundaries();
+        // Initialize everything when DOM is ready
+        document.addEventListener('DOMContentLoaded', function() {
+            console.log('DOM loaded, initializing app...');
+            console.log('URL Search Params:', window.location.search);
+            
+            // Get country selector
+            const countrySelect = document.getElementById('countrySelect');
+            if (!countrySelect) {
+                console.error('Country selector not found');
+                return;
+            }
+            
+            // Log available options for debugging
+            const availableCountries = Array.from(countrySelect.options).map(opt => opt.value);
+            console.log('Available countries in dropdown:', availableCountries);
+            console.log('Requested country from URL:', currentCountry);
+            
+            // Robust check for current country
+            if (!availableCountries.includes(currentCountry)) {
+                console.warn(`Requested country '${currentCountry}' not exactly found in options.`);
+                // Try case-insensitive matching
+                const match = availableCountries.find(c => c.toLowerCase() === currentCountry.toLowerCase());
+                if (match) {
+                    console.log(`Found case-insensitive match: ${match}`);
+                    currentCountry = match;
+                } else {
+                    console.warn(`No match found. Defaulting to ${availableCountries[0]}`);
+                    currentCountry = availableCountries[0];
+                }
+            }
+            
+            // Set dropdown value
+            countrySelect.value = currentCountry;
+            console.log('Final currentCountry for initialization:', currentCountry);
+            
+            // Initialize the map
+            try {
+                initializeMap();
+                console.log('Map initialized successfully');
+            } catch (e) {
+                console.error('Map initialization failed:', e);
+            }
+            
+            // Load country configs and boundaries
+            loadCountryConfigs().then(() => {
+                console.log('Country configs loaded:', Object.keys(countryConfigs));
+                
+                // If we have a map center for the current country, update the map now
+                // This fixes the issue where map initializes to Jamaica hardcoded coords
+                centerMapOnCountry(currentCountry);
+                
+                // Now load boundaries
+                loadBoundaries(currentCountry);
+            }).catch(err => {
+                console.error('Failed to load country configs:', err);
+                // Try to load boundaries anyway as fallback
+                loadBoundaries(currentCountry);
+            });
+            
+            // Country selector change handler
+            countrySelect.addEventListener('change', function(e) {
+                currentCountry = e.target.value;
+                console.log('Country changed to:', currentCountry);
+                
+                // Update URL without reload
+                try {
+                    const url = new URL(window.location);
+                    url.searchParams.set('country', currentCountry);
+                    window.history.pushState({}, '', url);
+                } catch (e) {
+                    console.error('Failed to update URL:', e);
+                }
+                
+                centerMapOnCountry(currentCountry);
+                loadBoundaries(currentCountry);
+            });
+        });
         
         // Add a marker that will be placed on click
         let currentMarker = null;
         const mapResult = document.getElementById('mapResult');
         
-        // Handle map clicks
-        map.on('click', async function(e) {
-            const lat = e.latlng.lat;
-            const lon = e.latlng.lng;
-            
-            // Remove previous marker if exists
-            if (currentMarker) {
-                map.removeLayer(currentMarker);
-            }
-            
-            // Add new marker
-            currentMarker = L.marker([lat, lon]).addTo(map);
-            
-            // Show loading state
-            showMapResult('Loading P-code information...', null);
-            
-            try {
-                const response = await fetch('/reverse_geocode', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ latitude: lat, longitude: lon })
-                });
-                
-                const result = await response.json();
-                
-                if (result.success) {
-                    showMapResult(`
-                        <div class="result-row"><span class="result-label">Latitude:</span> ${result.latitude.toFixed(6)}</div>
-                        <div class="result-row"><span class="result-label">Longitude:</span> ${result.longitude.toFixed(6)}</div>
-                        <div class="result-row"><span class="result-label">Parish (P-Code):</span> ${result.parish_pcode || 'N/A'}</div>
-                        <div class="result-row"><span class="result-label">Parish Name:</span> ${result.parish_name || 'N/A'}</div>
-                        <div class="result-row"><span class="result-label">Community (P-Code):</span> ${result.community_pcode || 'N/A'}</div>
-                        <div class="result-row"><span class="result-label">Community Name:</span> ${result.community_name || 'N/A'}</div>
-                    `, true);
-                    
-                    // Update marker popup
-                    currentMarker.bindPopup(`
-                        <strong>${result.parish_name || 'Unknown Parish'}</strong><br>
-                        ${result.community_name || 'Unknown Community'}<br>
-                        <small>P-Code: ${result.community_pcode || 'N/A'}</small>
-                    `).openPopup();
-                } else {
-                    showMapResult(result.error || 'Could not find P-code information for this location', false);
-                }
-            } catch (error) {
-                showMapResult('Error: ' + error.message, false);
-            }
-        });
+        // Old handlers removed - functionality moved to handleMapClick
+
         
         function showMapResult(html, success) {
             mapResult.innerHTML = html;
@@ -1128,21 +1298,28 @@
                     headers: {
                         'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({ address: address })
+                    body: JSON.stringify({ 
+                        address: address,
+                        country: currentCountry
+                    })
                 });
                 
                 const result = await response.json();
                 
                 if (result.success) {
+                    // Use labels from API response (already includes country-specific labels)
+                    const admin1Label = result.admin1_label || 'Admin Level 1';
+                    const admin2Label = result.admin2_label || 'Admin Level 2';
+                    
                     showSingleResult(`
                         <div class="result-row"><span class="result-label">Address:</span> ${result.address}</div>
                         <div class="result-row"><span class="result-label">Latitude:</span> ${result.latitude.toFixed(6)}</div>
                         <div class="result-row"><span class="result-label">Longitude:</span> ${result.longitude.toFixed(6)}</div>
                         <div class="result-row"><span class="result-label">Confidence:</span> ${result.confidence}</div>
-                        <div class="result-row"><span class="result-label">Parish (P-Code):</span> ${result.parish_pcode || 'N/A'}</div>
-                        <div class="result-row"><span class="result-label">Parish Name:</span> ${result.parish_name || 'N/A'}</div>
-                        <div class="result-row"><span class="result-label">Community (P-Code):</span> ${result.community_pcode || 'N/A'}</div>
-                        <div class="result-row"><span class="result-label">Community Name:</span> ${result.community_name || 'N/A'}</div>
+                        <div class="result-row"><span class="result-label">${admin1Label} (P-Code):</span> ${result.admin1_pcode || 'N/A'}</div>
+                        <div class="result-row"><span class="result-label">${admin1Label} Name:</span> ${result.admin1_name || 'N/A'}</div>
+                        <div class="result-row"><span class="result-label">${admin2Label} (P-Code):</span> ${result.admin2_pcode || 'N/A'}</div>
+                        <div class="result-row"><span class="result-label">${admin2Label} Name:</span> ${result.admin2_name || 'N/A'}</div>
                     `, true);
 
                     // Add marker to map and center on the location
@@ -1158,10 +1335,11 @@
                     currentMarker = L.marker([lat, lon]).addTo(map);
 
                     // Add popup to the marker with location details
+                    // admin1Label/admin2Label already declared above
                     currentMarker.bindPopup(`
-                        <strong>${result.parish_name || 'Unknown Parish'}</strong><br>
-                        ${result.community_name || 'Unknown Community'}<br>
-                        <small>P-Code: ${result.community_pcode || 'N/A'}</small><br>
+                        <strong>${result.admin1_name || `Unknown ${admin1Label}`}</strong><br>
+                        ${result.admin2_name || `Unknown ${admin2Label}`}<br>
+                        <small>P-Code: ${result.admin2_pcode || 'N/A'}</small><br>
                         <small>${result.address}</small>
                     `).openPopup();
 
@@ -1172,10 +1350,10 @@
                     showMapResult(`
                         <div class="result-row"><span class="result-label">Latitude:</span> ${lat.toFixed(6)}</div>
                         <div class="result-row"><span class="result-label">Longitude:</span> ${lon.toFixed(6)}</div>
-                        <div class="result-row"><span class="result-label">Parish (P-Code):</span> ${result.parish_pcode || 'N/A'}</div>
-                        <div class="result-row"><span class="result-label">Parish Name:</span> ${result.parish_name || 'N/A'}</div>
-                        <div class="result-row"><span class="result-label">Community (P-Code):</span> ${result.community_pcode || 'N/A'}</div>
-                        <div class="result-row"><span class="result-label">Community Name:</span> ${result.community_name || 'N/A'}</div>
+                        <div class="result-row"><span class="result-label">${admin1Label} (P-Code):</span> ${result.admin1_pcode || 'N/A'}</div>
+                        <div class="result-row"><span class="result-label">${admin1Label} Name:</span> ${result.admin1_name || 'N/A'}</div>
+                        <div class="result-row"><span class="result-label">${admin2Label} (P-Code):</span> ${result.admin2_pcode || 'N/A'}</div>
+                        <div class="result-row"><span class="result-label">${admin2Label} Name:</span> ${result.admin2_name || 'N/A'}</div>
                     `, true);
                 } else {
                     showSingleResult(result.error || 'Failed to geocode address', false);
@@ -1253,6 +1431,8 @@
             }
             
             const formData = new FormData(uploadForm);
+            // Add selected country to form data
+            formData.append('country', currentCountry);
             
             // Show progress
             progress.style.display = 'block';
