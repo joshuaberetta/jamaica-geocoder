@@ -1,12 +1,10 @@
-version: '3.8'
-
 services:
   geocoder:
     build:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "5000:5000"
+      - "8000:5000"
     environment:
       - GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY}
       - SECRET_KEY=${SECRET_KEY:-humanitarian-geocoder-secret-key-change-in-production}

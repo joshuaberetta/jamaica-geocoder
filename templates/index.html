@@ -6,6 +6,8 @@
     <title>Humanitarian Geocoder</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/localforage/1.10.0/localforage.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.5.0/lz-string.min.js"></script>
     <style>
         * {
             margin: 0;
@@ -533,7 +535,50 @@
             width: 100%;
             border-radius: 4px;
             border: 1px solid #d1d5da;
+            /* margin-top moved to container */
+        }
+
+        .map-container {
+            position: relative;
+            width: 100%;
             margin-top: 12px;
+        }
+
+        .map-loader {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.8);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            border-radius: 4px;
+            flex-direction: column;
+            gap: 12px;
+            border: 1px solid #d1d5da; /* match map border for clean alignment */
+        }
+
+        .spinner {
+            width: 40px;
+            height: 40px;
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #4A90E2;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+        }
+
+        .loading-text {
+            color: #2c3e50;
+            font-size: 14px;
+            font-weight: 500;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
         }
         
         .map-result {
@@ -777,7 +822,15 @@
         <div class="map-section">
             <h2>Select Point from Map</h2>
             <p class="map-instructions">Click anywhere on the map to get P-code information for that location</p>
-            <div id="map"></div>
+            
+            <div class="map-container">
+                <div id="loading-spinner" class="map-loader" style="display: none;">
+                    <div class="spinner"></div>
+                    <div class="loading-text">Loading boundary data...</div>
+                </div>
+                <div id="map"></div>
+            </div>
+            
             <div class="map-result" id="mapResult"></div>
         </div>
         
@@ -873,6 +926,10 @@
                 </svg>
             </span>
             Built by <a href="https://www.kobo.ngo/" target="_blank">Kobo</a>
+            <span style="margin: 0 8px; color: #cbd5e1;">|</span>
+            <a href="mailto:joshua@kobotoolbox.org?subject=Geocoding App Issue">Report an issue</a>
+            <span style="margin: 0 8px; color: #cbd5e1;">|</span>
+            <a href="#" id="clearCacheBtn" title="Clear locally cached boundary data">Clear Data</a>
         </div>
     </div>
     
@@ -995,35 +1052,53 @@
         
         // Cache keys - will be country-specific
         function getBoundaryCacheKey(country) {
-            return `${country}_boundaries_v4`;
+            return `${country}_boundaries_v5`; // Increment version for new storage format
         }
         function getBoundaryEtagKey(country) {
-            return `${country}_boundaries_etag_v4`;
+            return `${country}_boundaries_etag_v5`;
         }
         
         // Track if boundaries are already on map
         let boundariesLoaded = false;
         
-        // Simple compression using LZString-like approach (lightweight)
-        function compressToLocalStorage(key, data) {
+        // Configure localForage
+        localforage.config({
+            name: 'HumanitarianGeocoder',
+            storeName: 'boundary_cache', // Should be alphanumeric, with underscores.
+            description: 'Storage for large boundary GeoJSON files'
+        });
+
+        // Async storage helper with LZ-String compression
+        async function saveToStorage(key, data) {
             try {
-                // For very large data, we'll use sessionStorage instead
-                // sessionStorage has similar size limits but clears on tab close
-                // which is fine since we'll refetch anyway
-                sessionStorage.setItem(key, data);
+                // Compress string data before storing
+                const compressed = LZString.compressToUTF16(data);
+                await localforage.setItem(key, compressed);
                 return true;
             } catch (e) {
-                console.warn('SessionStorage failed, boundary data too large to cache');
+                console.warn('IndexedDB/localForage write failed:', e);
                 return false;
             }
         }
         
-        function getFromLocalStorage(key) {
-            return sessionStorage.getItem(key);
+        async function getFromStorage(key) {
+            try {
+                const compressed = await localforage.getItem(key);
+                if (!compressed) return null;
+                // Decompress
+                return LZString.decompressFromUTF16(compressed);
+            } catch (e) {
+                console.warn('IndexedDB/localForage read failed:', e);
+                return null;
+            }
         }
         
-        function removeFromLocalStorage(key) {
-            sessionStorage.removeItem(key);
+        async function removeFromStorage(key) {
+            try {
+                await localforage.removeItem(key);
+            } catch (e) {
+                console.warn('IndexedDB/localForage remove failed:', e);
+            }
         }
         
         // Store current boundary layer for removal on country change
@@ -1080,29 +1155,34 @@
         async function loadBoundaries(country = 'jamaica') {
             console.log(`Loading boundaries for ${country}...`);
             
+            const spinner = document.getElementById('loading-spinner');
+            if (spinner) spinner.style.display = 'flex';
+
             const cacheKey = getBoundaryCacheKey(country);
             const etagKey = getBoundaryEtagKey(country);
             
-            // Try to load from cache first (using sessionStorage for large data)
-            const cachedData = getFromLocalStorage(cacheKey);
+            // Try to load from cache first (async from IndexedDB)
+            let cachedData = await getFromStorage(cacheKey);
             const cachedETag = localStorage.getItem(etagKey);
             
             let cacheDisplayed = false;
-            if (cachedData) {
-                console.log('Found cached boundaries, displaying...');
-                try {
-                    const data = JSON.parse(cachedData);
-                    addBoundariesToMap(data);
-                    cacheDisplayed = true;
-                } catch (error) {
-                    console.error('Error parsing cached boundaries:', error);
-                    removeFromLocalStorage(cacheKey);
-                    localStorage.removeItem(etagKey);
-                }
-            }
             
-            // Fetch from server
             try {
+                if (cachedData) {
+                    console.log('Found cached boundaries (decompressed), displaying...');
+                    try {
+                        const data = JSON.parse(cachedData);
+                        addBoundariesToMap(data);
+                        cacheDisplayed = true;
+                    } catch (error) {
+                        console.error('Error parsing cached boundaries:', error);
+                        await removeFromStorage(cacheKey);
+                        localStorage.removeItem(etagKey);
+                        cachedData = null;
+                    }
+                }
+                
+                // Fetch from server
                 const headers = {};
                 if (cachedETag) {
                     headers['If-None-Match'] = cachedETag;
@@ -1116,7 +1196,7 @@
                     // If we didn't display cache earlier (shouldn't happen), we have a problem
                     if (!cacheDisplayed) {
                         console.warn('Got 304 but no cache was available, clearing cache and retrying...');
-                        removeFromLocalStorage(cacheKey);
+                        await removeFromStorage(cacheKey);
                         localStorage.removeItem(etagKey);
                         // Retry without ETag
                         return loadBoundaries(country);
@@ -1137,9 +1217,9 @@
                     localStorage.setItem(etagKey, etag);
                 }
                 
-                // Cache in sessionStorage (cleared on tab close, but that's fine)
-                if (compressToLocalStorage(cacheKey, text)) {
-                    console.log('✓ Boundaries cached in session');
+                // Cache in IndexedDB with compression
+                if (await saveToStorage(cacheKey, text)) {
+                    console.log('✓ Boundaries compressed and cached');
                 }
                 
                 // Add to map if not already loaded from cache
@@ -1157,6 +1237,8 @@
                         console.error('Cache fallback also failed:', e);
                     }
                 }
+            } finally {
+                if (spinner) spinner.style.display = 'none';
             }
         }
         
@@ -1165,6 +1247,30 @@
             console.log('DOM loaded, initializing app...');
             console.log('URL Search Params:', window.location.search);
             
+            // Handle Cache Clearing
+            const clearCacheBtn = document.getElementById('clearCacheBtn');
+            if (clearCacheBtn) {
+                clearCacheBtn.addEventListener('click', async (e) => {
+                    e.preventDefault();
+                    if (confirm('This will clear all cached boundary data and reload the page. Continue?')) {
+                        try {
+                            await localforage.clear(); // Clear all IndexedDB data
+                            sessionStorage.clear(); // Clear legacy session storage
+                            // Also clear ETags from localStorage
+                            Object.keys(localStorage).forEach(key => {
+                                if (key.includes('_boundaries_etag_')) {
+                                    localStorage.removeItem(key);
+                                }
+                            });
+                            alert('Cache cleared successfully.');
+                        } catch (err) {
+                            console.error('Error clearing cache:', err);
+                        }
+                        window.location.reload();
+                    }
+                });
+            }
+
             // Get country selector
             const countrySelect = document.getElementById('countrySelect');
             if (!countrySelect) {

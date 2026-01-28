@@ -48,14 +48,10 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 # Copy application files
 COPY --chown=appuser:appuser geocode.py .
 COPY --chown=appuser:appuser web_app.py .
-COPY --chown=appuser:appuser run_web.sh .
 COPY --chown=appuser:appuser countries/ ./countries/
 COPY --chown=appuser:appuser boundaries/ ./boundaries/
 COPY --chown=appuser:appuser templates/ ./templates/
 COPY --chown=appuser:appuser logos/ ./logos/
-
-# Make run script executable
-RUN chmod +x run_web.sh
 
 # Switch to non-root user
 USER appuser
@@ -68,4 +64,4 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:5000/health').read()"
 
 # Run the application
-CMD ["./run_web.sh"]
+CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--timeout", "300", "--workers", "1", "web_app:app"]

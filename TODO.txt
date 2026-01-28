@@ -1,4 +1,0 @@
-- Tests
-- Refactor to clean up
-- Deploy to DO and configure custom domain
-- Share with MapAction team

@@ -2,8 +2,11 @@
 
 # Activate virtual environment and run the web app
 
-cd "$(dirname "$0")"
+# Ensure we are running from the project root
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
+cd "$SCRIPT_DIR/.."
 
+# Check if venv exists
 if [ ! -d "venv" ]; then
     echo "Creating virtual environment..."
     python3 -m venv venv
@@ -15,5 +18,5 @@ else
 fi
 
 echo "Starting web app..."
-echo "Open http://localhost:5001 in your browser"
+echo "Open http://localhost:5000 in your browser"
 python web_app.py
