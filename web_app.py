@@ -6,10 +6,12 @@ Upload CSV, get geocoded results with admin boundaries for humanitarian response
 
 from flask import Flask, render_template, request, send_file, jsonify, redirect, url_for, session, make_response
 from flask_cors import CORS
+from flask_compress import Compress
 from werkzeug.utils import secure_filename
 import os
 import io
 import json
+import gzip
 import pandas as pd
 import geopandas as gpd
 from shapely.geometry import Point
@@ -27,6 +29,7 @@ load_dotenv()
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
+Compress(app)  # Enable Gzip compression
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 app.config['UPLOAD_FOLDER'] = tempfile.gettempdir()
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
@@ -47,6 +50,7 @@ def login_required(f):
 # Load boundaries once at startup - support multiple countries
 boundaries_cache = {}  # Dictionary: country_code -> gdf
 boundaries_geojson_cache = {}  # Dictionary: country_code -> geojson string
+boundaries_gzip_cache = {}  # Dictionary: country_code -> gzipped geojson bytes
 boundaries_etag_cache = {}  # Dictionary: country_code -> etag
 
 def load_boundaries(country: str = DEFAULT_COUNTRY):
@@ -59,7 +63,7 @@ def load_boundaries(country: str = DEFAULT_COUNTRY):
     Returns:
     - GeoDataFrame with boundaries or None if not found
     """
-    global boundaries_cache, boundaries_geojson_cache, boundaries_etag_cache
+    global boundaries_cache, boundaries_geojson_cache, boundaries_gzip_cache, boundaries_etag_cache
     
     try:
         country_config = get_country_config(country)
@@ -93,6 +97,7 @@ def load_boundaries(country: str = DEFAULT_COUNTRY):
         etag = hashlib.md5(geojson_str.encode()).hexdigest()
         
         boundaries_geojson_cache[country_code] = geojson_str
+        boundaries_gzip_cache[country_code] = gzip.compress(geojson_str.encode('utf-8'))
         boundaries_etag_cache[country_code] = etag
         
         print(f"Cached boundaries GeoJSON for {country_config['name']} (ETag: {etag})")
@@ -336,8 +341,15 @@ def get_boundaries():
         if client_etag and server_etag and client_etag == f'"{server_etag}"':
             return '', 304  # Not Modified
         
-        # Create response with caching headers
-        response = make_response(boundaries_geojson_cache[country_code])
+        # Create response with pre-compressed data
+        if country_code in boundaries_gzip_cache:
+            response = make_response(boundaries_gzip_cache[country_code])
+            response.headers['Content-Encoding'] = 'gzip'
+            response.headers['Content-Length'] = len(boundaries_gzip_cache[country_code])
+        else:
+            # Fallback to uncompressed (shouldn't happen if loaded correctly)
+            response = make_response(boundaries_geojson_cache[country_code])
+            
         response.headers['Content-Type'] = 'application/json'
         response.headers['ETag'] = f'"{server_etag}"'
         response.headers['Cache-Control'] = 'public, max-age=86400'  # Cache for 24 hours
