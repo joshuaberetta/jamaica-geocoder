@@ -6,4 +6,6 @@ python-dotenv
 openpyxl
 flask
 flask-cors
+flask-compress
 gunicorn
+pytest

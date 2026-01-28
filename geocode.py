@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Geocode addresses and match to Jamaica administrative boundaries using GeoPandas.
+Humanitarian Geocoder - Geocode addresses and match to administrative boundaries.
+Supports multiple countries for humanitarian response efforts.
 Uses Google Maps Geocoding API for accurate geocoding.
 """
 
@@ -9,7 +10,7 @@ import time
 import json
 import re
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, Dict, Any
 from urllib.parse import urlencode
 from urllib.request import urlopen, Request
 from urllib.error import URLError, HTTPError
@@ -19,6 +20,8 @@ import geopandas as gpd
 from shapely.geometry import Point
 from dotenv import load_dotenv
 
+from countries.country_config import get_country_config, validate_coordinates, normalize_longitude, DEFAULT_COUNTRY
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -26,7 +29,7 @@ load_dotenv()
 GOOGLE_MAPS_API_KEY = os.getenv('GOOGLE_MAPS_API_KEY', '')
 
 
-def parse_coordinates(text: str) -> Optional[Tuple[float, float]]:
+def parse_coordinates(text: str, country_config: Optional[Dict[str, Any]] = None) -> Optional[Tuple[float, float]]:
     """
     Try to parse coordinates from a text string.
     Supports formats like:
@@ -35,10 +38,17 @@ def parse_coordinates(text: str) -> Optional[Tuple[float, float]]:
     - "18.1234 -77.5678"
     - "(18.1234, -77.5678)"
     
+    Parameters:
+    - text: String potentially containing coordinates
+    - country_config: Country configuration dictionary (optional, for validation)
+    
     Returns (latitude, longitude) or None if not valid coordinates.
     """
     if not text or pd.isna(text):
         return None
+    
+    if country_config is None:
+        country_config = get_country_config(DEFAULT_COUNTRY)
     
     text = str(text).strip()
     
@@ -55,31 +65,33 @@ def parse_coordinates(text: str) -> Optional[Tuple[float, float]]:
             lat = float(match.group(1))
             lon = float(match.group(2))
             
-            # Validate Jamaica coordinates (roughly 17-19°N, 76-79°W)
-            # Accept both positive/negative longitude formats
-            if 17.0 <= lat <= 19.0:
-                # Normalize longitude to negative (West)
-                if lon > 0:
-                    lon = -lon
-                if -79.0 <= lon <= -76.0:
-                    return (lat, lon)
+            # Normalize longitude sign based on country hemisphere
+            lon = normalize_longitude(lon, country_config)
+            
+            # Validate coordinates against country bounds
+            if validate_coordinates(lat, lon, country_config):
+                return (lat, lon)
             
             # Also check if lat/lon are swapped
-            if 17.0 <= lon <= 19.0:
-                if lat > 0:
-                    lat = -lat
-                if -79.0 <= lat <= -76.0:
-                    return (lon, lat)  # Return swapped
+            lat_swapped = lon
+            lon_swapped = normalize_longitude(lat, country_config)
+            if validate_coordinates(lat_swapped, lon_swapped, country_config):
+                return (lat_swapped, lon_swapped)  # Return swapped
         except ValueError:
             pass
     
     return None
 
 
-def geocode_address(full_address: str) -> Optional[Tuple[float, float, str]]:
+def geocode_address(full_address: str, country_config: Optional[Dict[str, Any]] = None) -> Optional[Tuple[float, float, str]]:
     """
     Geocode a full address query string using Google Maps Geocoding API.
     The caller should include any contextual fields (e.g. name) in the query.
+    
+    Parameters:
+    - full_address: Address string to geocode
+    - country_config: Country configuration dictionary (optional, defaults to Jamaica)
+    
     Returns (latitude, longitude, confidence) or None if not found.
     Confidence is the location_type from Google: ROOFTOP, RANGE_INTERPOLATED, GEOMETRIC_CENTER, or APPROXIMATE.
     
@@ -88,8 +100,11 @@ def geocode_address(full_address: str) -> Optional[Tuple[float, float, str]]:
     
     Uses multiple fallback strategies to find approximate locations for vague addresses.
     """
+    if country_config is None:
+        country_config = get_country_config(DEFAULT_COUNTRY)
+    
     # First check if the address is already coordinates
-    coords = parse_coordinates(full_address)
+    coords = parse_coordinates(full_address, country_config)
     if coords:
         lat, lon = coords
         return (lat, lon, 'COORDINATES')
@@ -98,28 +113,18 @@ def geocode_address(full_address: str) -> Optional[Tuple[float, float, str]]:
         print("Error: GOOGLE_MAPS_API_KEY not set. Please set it in your .env or environment.")
         return None
 
-    # Ensure Jamaica is present to bias results
+    # Ensure country name is present to bias results
+    country_name = country_config['name']
     query = full_address.strip()
-    if 'jamaica' not in query.lower():
-        query = f"{query}, Jamaica"
+    if country_name.lower() not in query.lower():
+        query = f"{query}, {country_name}"
     
-    # Common spelling corrections for Jamaica place names
-    spelling_corrections = {
-        'morroon': 'Maroon Town',
-        'moroon': 'Maroon Town',
-        'morant': 'Morant Bay',
-        'portmore': 'Portmore',
-        'mandavilla': 'Mandeville',
-        'ochos rios': 'Ocho Rios',
-        'montigo bay': 'Montego Bay',
-        'jdf': 'Jamaica Defence Force Camp',  # Common military base reference
-    }
-    
-    # Apply spelling corrections
+    # Apply country-specific spelling corrections
+    spelling_corrections = country_config.get('spelling_corrections', {})
     query_lower = query.lower()
     for typo, correction in spelling_corrections.items():
         if typo in query_lower:
-            query = query_lower.replace(typo, correction) + ', Jamaica'
+            query = query_lower.replace(typo, correction) + f', {country_name}'
             break
 
     # Try different query strategies in order of preference
@@ -127,13 +132,13 @@ def geocode_address(full_address: str) -> Optional[Tuple[float, float, str]]:
         query,  # Original query (possibly corrected)
     ]
     
-    # For vague addresses, try adding common modifiers
-    if any(word in query.lower() for word in ['orphanage', 'home', 'school', 'church', 'castle', 'outskirts']):
-        # Try without Jamaica to see if it's a known place
-        base = query.replace(', Jamaica', '').replace(',Jamaica', '').strip()
-        queries_to_try.append(f"{base}, Portland, Jamaica")  # Try with common parish
-        queries_to_try.append(f"{base}, St. Andrew, Jamaica")
-        queries_to_try.append(f"{base}, Kingston, Jamaica")
+    # For vague addresses, try adding common modifiers (if fallback parishes available)
+    fallback_locations = country_config.get('fallback_parishes', [])
+    if fallback_locations and any(word in query.lower() for word in ['orphanage', 'home', 'school', 'church', 'castle', 'outskirts']):
+        # Try without country name to see if it's a known place
+        base = query.replace(f', {country_name}', '').replace(f',{country_name}', '').strip()
+        for location in fallback_locations[:3]:  # Try first 3 fallback locations
+            queries_to_try.append(f"{base}, {location}, {country_name}")
     
     best_result = None
     best_quality = -1  # Track quality: 4=ROOFTOP, 3=RANGE_INTERPOLATED, 2=GEOMETRIC_CENTER, 1=APPROXIMATE, 0=vague
@@ -142,8 +147,8 @@ def geocode_address(full_address: str) -> Optional[Tuple[float, float, str]]:
         params = {
             'address': attempt_query,
             'key': GOOGLE_MAPS_API_KEY,
-            'region': 'jm',  # Bias results to Jamaica
-            'components': 'country:JM'  # Restrict results to Jamaica only
+            'region': country_config['google_maps_region'],
+            'components': country_config['google_maps_components']
         }
 
         url = f"https://maps.googleapis.com/maps/api/geocode/json?{urlencode(params)}"
@@ -159,24 +164,22 @@ def geocode_address(full_address: str) -> Optional[Tuple[float, float, str]]:
                     geometry = result.get('geometry', {})
                     location_type = geometry.get('location_type', 'UNKNOWN')
                     
-                    # Verify the result is in Jamaica by checking country component
+                    # Verify the result is in the correct country by checking country component
                     address_components = result.get('address_components', [])
-                    is_jamaica = any(
-                        'country' in comp.get('types', []) and comp.get('short_name') == 'JM'
+                    is_correct_country = any(
+                        'country' in comp.get('types', []) and comp.get('short_name') == country_config['code']
                         for comp in address_components
                     )
                     
-                    if not is_jamaica:
+                    if not is_correct_country:
                         continue
                     
                     # Accept results with meaningful location data
-                    # We accept: specific addresses, localities (towns/villages), sub-localities,
-                    # neighborhoods, points of interest, and administrative areas
                     acceptable_types = [
                         'locality',           # Towns, cities, villages
                         'sublocality',        # Neighborhoods within cities
                         'neighborhood',       # Named neighborhoods
-                        'administrative_area_level_1',  # Parishes
+                        'administrative_area_level_1',  # Provinces/States/Parishes
                         'administrative_area_level_2',  # Districts
                         'administrative_area_level_3',  # Communities
                         'postal_code',        # Postal codes
@@ -193,20 +196,20 @@ def geocode_address(full_address: str) -> Optional[Tuple[float, float, str]]:
                         for comp in address_components
                     )
                     
-                    # Even if no specific location, accept if it has parish-level data (better than nothing)
-                    has_parish = any(
+                    # Even if no specific location, accept if it has admin area data
+                    has_admin_area = any(
                         'administrative_area_level_1' in comp.get('types', [])
                         for comp in address_components
                     )
                     
-                    if not has_specific_location and not has_parish:
+                    if not has_specific_location and not has_admin_area:
                         continue
                     
                     lat = float(location['lat'])
                     lon = float(location['lng'])
                     
-                    # Additional check: Jamaica coordinates are roughly 17-19°N, 76-79°W
-                    if not (17.0 <= lat <= 19.0 and -79.0 <= lon <= -76.0):
+                    # Validate coordinates against country bounds
+                    if not validate_coordinates(lat, lon, country_config):
                         continue
                     
                     # Rank result quality
@@ -221,7 +224,7 @@ def geocode_address(full_address: str) -> Optional[Tuple[float, float, str]]:
                         if has_specific_location:
                             quality = 1  # Acceptable approximate location
                         else:
-                            quality = 0  # Too vague (just parish)
+                            quality = 0  # Too vague (just admin area)
                     
                     # Keep the best result
                     if quality > best_quality:
@@ -247,12 +250,11 @@ def geocode_address(full_address: str) -> Optional[Tuple[float, float, str]]:
         return best_result
     
     # Final fallback: try Google Places API Text Search for very vague queries
-    # This is useful for place names that geocoding doesn't recognize
     try:
         places_params = {
             'query': full_address,
             'key': GOOGLE_MAPS_API_KEY,
-            'region': 'jm',
+            'region': country_config['google_maps_region'],
         }
         
         places_url = f"https://maps.googleapis.com/maps/api/place/textsearch/json?{urlencode(places_params)}"
@@ -267,8 +269,8 @@ def geocode_address(full_address: str) -> Optional[Tuple[float, float, str]]:
                 lat = float(location['lat'])
                 lon = float(location['lng'])
                 
-                # Verify Jamaica bounds
-                if 17.0 <= lat <= 19.0 and -79.0 <= lon <= -76.0:
+                # Verify bounds
+                if validate_coordinates(lat, lon, country_config):
                     print(f"  Found via Places API: {result.get('name')}")
                     return (lat, lon, 'PLACES_API')
     except Exception as e:
@@ -277,7 +279,8 @@ def geocode_address(full_address: str) -> Optional[Tuple[float, float, str]]:
     return None
 
 
-def geocode_dataframe(df: pd.DataFrame, address_column: str = 'address', delay: float = 0.1) -> Tuple[gpd.GeoDataFrame, dict]:
+def geocode_dataframe(df: pd.DataFrame, address_column: str = 'address', delay: float = 0.1, 
+                     country_config: Optional[Dict[str, Any]] = None) -> Tuple[gpd.GeoDataFrame, dict]:
     """
     Geocode all addresses in a DataFrame and return a GeoDataFrame with statistics.
     
@@ -285,16 +288,20 @@ def geocode_dataframe(df: pd.DataFrame, address_column: str = 'address', delay: 
     - df: Input DataFrame with addresses
     - address_column: Name of column containing addresses
     - delay: Delay between requests in seconds (Google allows ~50 req/sec, 0.1s is safe)
+    - country_config: Country configuration dictionary (optional, defaults to Jamaica)
     
     Returns:
     - Tuple of (GeoDataFrame with point geometries, statistics dict)
     """
+    if country_config is None:
+        country_config = get_country_config(DEFAULT_COUNTRY)
+    
     latitudes = []
     longitudes = []
     confidences = []
     stats = {'total': len(df), 'successful': 0, 'failed': 0, 'skipped': 0}
     
-    print(f"\nGeocoding {len(df)} addresses...")
+    print(f"\nGeocoding {len(df)} addresses for {country_config['name']}...")
     
     row_count = 0
     for idx, row in df.iterrows():
@@ -302,7 +309,7 @@ def geocode_dataframe(df: pd.DataFrame, address_column: str = 'address', delay: 
         address = row.get(address_column, '')
         
         # Check if address is coordinates first
-        coords_from_address = parse_coordinates(address) if address and pd.notna(address) else None
+        coords_from_address = parse_coordinates(address, country_config) if address and pd.notna(address) else None
         
         if coords_from_address:
             # Address is already coordinates, use directly
@@ -340,7 +347,7 @@ def geocode_dataframe(df: pd.DataFrame, address_column: str = 'address', delay: 
         print(f"[{row_count}/{len(df)}] {full_query}")
 
         try:
-            coords = geocode_address(full_query)
+            coords = geocode_address(full_query, country_config)
             
             if coords:
                 lat, lon, confidence = coords
@@ -460,7 +467,8 @@ def process_addresses(
     address_column: str = 'address',
     delay: float = 1.0,
     keep_geometry: bool = False,
-    limit: Optional[int] = None
+    limit: Optional[int] = None,
+    country: str = DEFAULT_COUNTRY
 ):
     """
     Process addresses: geocode and match to administrative boundaries.
@@ -473,7 +481,14 @@ def process_addresses(
     - delay: Delay between geocoding requests (seconds)
     - keep_geometry: If True, output as GeoJSON; if False, output as CSV
     - limit: Optional limit on number of addresses to process (for testing)
+    - country: Country code or name (e.g., 'jamaica', 'mozambique', 'JM', 'MZ')
     """
+    # Load country configuration
+    country_config = get_country_config(country)
+    country_name = country_config['name']
+    
+    print(f"Processing addresses for {country_name}...")
+    
     # Read addresses
     print(f"Reading addresses from {address_file}...")
     # Attempt to read as a normal CSV first so existing columns are preserved.
@@ -540,7 +555,7 @@ def process_addresses(
     print(f"\nBoundary columns: {', '.join(boundaries.columns)}")
     
     # Geocode addresses
-    points_gdf, stats = geocode_dataframe(df, address_column, delay)
+    points_gdf, stats = geocode_dataframe(df, address_column, delay, country_config)
     
     # Print statistics
     print(f"\nGeocoding Statistics:")
@@ -605,26 +620,30 @@ def main():
     import sys
     
     if len(sys.argv) < 3:
-        print("GeoPandas-based Address Geocoder and Boundary Matcher")
+        print("Humanitarian Geocoder - Multi-Country Address Geocoding")
         print("="*60)
-        print("\nUsage: python geocode.py <address_csv> <boundaries_geojson> [output_file] [--limit N]")
+        print("\nUsage: python geocode.py <address_csv> <boundaries_geojson> [output_file] [--limit N] [--country CODE]")
         print("\nExamples:")
         print("  # Create .env file with your API key")
         print("  echo 'GOOGLE_MAPS_API_KEY=your-api-key-here' > .env")
-        print("  python geocode.py addresses.csv communities.geojson output.csv")
+        print("  python geocode.py addresses.csv boundaries/jamaica.geojson output.csv")
+        print("\n  # Geocode for Mozambique")
+        print("  python geocode.py addresses.csv boundaries/mozambique.geojson output.csv --country mozambique")
         print("\n  # Test with first 10 addresses")
-        print("  python geocode.py addresses.csv communities.geojson output.xlsx --limit 10")
+        print("  python geocode.py addresses.csv boundaries/jamaica.geojson output.xlsx --limit 10")
         print("\n  # Output as GeoJSON")
-        print("  python geocode.py addresses.csv communities.geojson output.geojson")
+        print("  python geocode.py addresses.csv boundaries/jamaica.geojson output.geojson")
         print("\nThe CSV should have a column named 'address' with street addresses.")
         print("\nRequired: Google Maps API key in .env file (GOOGLE_MAPS_API_KEY=your-key)")
         print("Get your API key at: https://console.cloud.google.com/google/maps-apis")
+        print("\nSupported countries: jamaica (JM), mozambique (MZ)")
         print("\nRequired packages: pandas, geopandas, shapely, python-dotenv")
         sys.exit(1)
     
     # Parse arguments
     args = sys.argv[1:]
     limit = None
+    country = DEFAULT_COUNTRY
     
     # Check for --limit flag
     if '--limit' in args:
@@ -638,6 +657,18 @@ def main():
             except (ValueError, IndexError):
                 print("Error: --limit requires a numeric value")
                 sys.exit(1)
+    
+    # Check for --country flag
+    if '--country' in args:
+        country_idx = args.index('--country')
+        if country_idx + 1 < len(args):
+            country = args[country_idx + 1]
+            # Remove --country and its value from args
+            args.pop(country_idx)
+            args.pop(country_idx)
+        else:
+            print("Error: --country requires a value (e.g., jamaica, mozambique, JM, MZ)")
+            sys.exit(1)
     
     address_file = args[0]
     geojson_file = args[1]
@@ -658,7 +689,8 @@ def main():
         output_file=output_file,
         address_column='address',  # Change if your column has different name
         delay=0.1,  # Google Maps allows ~50 requests/second, 0.1s is conservative
-        limit=limit
+        limit=limit,
+        country=country
     )
 
 

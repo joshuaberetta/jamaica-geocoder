@@ -1,0 +1,29 @@
+services:
+  geocoder:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:5000"
+    environment:
+      - GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY}
+      - SECRET_KEY=${SECRET_KEY:-humanitarian-geocoder-secret-key-change-in-production}
+      - LOGIN_USERNAME=${LOGIN_USERNAME:-admin}
+      - LOGIN_PASSWORD=${LOGIN_PASSWORD:-change-this-password}
+      - FLASK_ENV=${FLASK_ENV:-production}
+    volumes:
+      # Mount boundaries for easy updates without rebuild
+      - ./boundaries:/app/boundaries:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health').read()"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    networks:
+      - geocoder-network
+
+networks:
+  geocoder-network:
+    driver: bridge

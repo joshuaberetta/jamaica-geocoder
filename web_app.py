@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
 """
-Web interface for Jamaica address geocoding.
-Upload CSV, get geocoded results with admin boundaries.
+Humanitarian Geocoder - Web interface for multi-country address geocoding.
+Upload CSV, get geocoded results with admin boundaries for humanitarian response.
 """
 
 from flask import Flask, render_template, request, send_file, jsonify, redirect, url_for, session, make_response
 from flask_cors import CORS
+from flask_compress import Compress
 from werkzeug.utils import secure_filename
 import os
 import io
 import json
+import gzip
 import pandas as pd
 import geopandas as gpd
 from shapely.geometry import Point
@@ -21,11 +23,13 @@ import hashlib
 
 # Import geocoding functions from geocode.py
 from geocode import geocode_address, geocode_dataframe, spatial_join_boundaries
+from countries.country_config import get_country_config, get_all_countries, DEFAULT_COUNTRY
 
 load_dotenv()
 
 app = Flask(__name__)
 CORS(app)  # Enable CORS for all routes
+Compress(app)  # Enable Gzip compression
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
 app.config['UPLOAD_FOLDER'] = tempfile.gettempdir()
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
@@ -43,25 +47,65 @@ def login_required(f):
         return f(*args, **kwargs)
     return decorated_function
 
-# Load boundaries once at startup
-BOUNDARIES_FILE = os.getenv('BOUNDARIES_FILE', 'odpem.geojson')
-boundaries_gdf = None
-boundaries_geojson_cache = None
-boundaries_etag = None
+# Load boundaries once at startup - support multiple countries
+boundaries_cache = {}  # Dictionary: country_code -> gdf
+boundaries_geojson_cache = {}  # Dictionary: country_code -> geojson string
+boundaries_gzip_cache = {}  # Dictionary: country_code -> gzipped geojson bytes
+boundaries_etag_cache = {}  # Dictionary: country_code -> etag
 
-def load_boundaries():
-    global boundaries_gdf, boundaries_geojson_cache, boundaries_etag
-    if boundaries_gdf is None and Path(BOUNDARIES_FILE).exists():
-        print(f"Loading boundaries from {BOUNDARIES_FILE}...")
-        boundaries_gdf = gpd.read_file(BOUNDARIES_FILE)
-        print(f"Loaded {len(boundaries_gdf)} boundary features")
+def load_boundaries(country: str = DEFAULT_COUNTRY):
+    """
+    Load boundaries for a specific country.
+    
+    Parameters:
+    - country: Country code or name (e.g., 'jamaica', 'mozambique', 'JM', 'MZ')
+    
+    Returns:
+    - GeoDataFrame with boundaries or None if not found
+    """
+    global boundaries_cache, boundaries_geojson_cache, boundaries_gzip_cache, boundaries_etag_cache
+    
+    try:
+        country_config = get_country_config(country)
+        country_code = country_config['code']
+        
+        # Check if already loaded
+        if country_code in boundaries_cache:
+            return boundaries_cache[country_code]
+        
+        boundary_file = country_config['boundary_file']
+        
+        if not Path(boundary_file).exists():
+            print(f"Warning: Boundary file not found: {boundary_file}")
+            return None
+        
+        print(f"Loading boundaries for {country_config['name']} from {boundary_file}...")
+        gdf = gpd.read_file(boundary_file)
+        print(f"Loaded {len(gdf)} boundary features for {country_config['name']}")
+        
+        # Convert datetime columns to string to avoid JSON serialization errors
+        for col in gdf.columns:
+            if pd.api.types.is_datetime64_any_dtype(gdf[col]):
+                gdf[col] = gdf[col].astype(str)
+        
+        # Cache the GeoDataFrame
+        boundaries_cache[country_code] = gdf
         
         # Pre-compute GeoJSON and ETag for caching
-        gdf_wgs84 = boundaries_gdf.to_crs('EPSG:4326') if boundaries_gdf.crs and boundaries_gdf.crs != 'EPSG:4326' else boundaries_gdf
-        boundaries_geojson_cache = gdf_wgs84.to_json()
-        boundaries_etag = hashlib.md5(boundaries_geojson_cache.encode()).hexdigest()
-        print(f"Cached boundaries GeoJSON (ETag: {boundaries_etag})")
-    return boundaries_gdf
+        gdf_wgs84 = gdf.to_crs('EPSG:4326') if gdf.crs and gdf.crs != 'EPSG:4326' else gdf
+        geojson_str = gdf_wgs84.to_json()
+        etag = hashlib.md5(geojson_str.encode()).hexdigest()
+        
+        boundaries_geojson_cache[country_code] = geojson_str
+        boundaries_gzip_cache[country_code] = gzip.compress(geojson_str.encode('utf-8'))
+        boundaries_etag_cache[country_code] = etag
+        
+        print(f"Cached boundaries GeoJSON for {country_config['name']} (ETag: {etag})")
+        
+        return gdf
+    except Exception as e:
+        print(f"Error loading boundaries for {country}: {e}")
+        return None
 
 @app.route('/login', methods=['GET', 'POST'])
 def login():
@@ -88,12 +132,18 @@ def logout():
 
 @app.route('/')
 def index():
-    return render_template('index.html', logged_in=session.get('logged_in', False))
+    # Get list of available countries
+    countries = get_all_countries()
+    return render_template('index.html', logged_in=session.get('logged_in', False), countries=countries)
 
 @app.route('/geocode', methods=['POST'])
 @login_required
 def geocode():
     try:
+        # Get country parameter (default to jamaica for backward compatibility)
+        country = request.form.get('country', DEFAULT_COUNTRY)
+        country_config = get_country_config(country)
+        
         # Check if this is a single address request
         if request.is_json or request.form.get('single_address'):
             return geocode_single()
@@ -145,13 +195,13 @@ def geocode():
         except Exception as e:
             return jsonify({'error': f'Failed to read file: {str(e)}'}), 400
         
-        # Load boundaries
-        boundaries = load_boundaries()
+        # Load boundaries for the selected country
+        boundaries = load_boundaries(country)
         if boundaries is None:
-            return jsonify({'error': 'Boundary data not available'}), 500
+            return jsonify({'error': f'Boundary data not available for {country_config["name"]}'}), 500
         
         # Geocode addresses - use minimal delay to avoid timeout
-        points_gdf, stats = geocode_dataframe(df, address_column='address', delay=0.05)
+        points_gdf, stats = geocode_dataframe(df, address_column='address', delay=0.05, country_config=country_config)
         
         # Spatial join with boundaries
         result = spatial_join_boundaries(points_gdf, boundaries)
@@ -198,17 +248,21 @@ def geocode_single():
     try:
         data = request.get_json() if request.is_json else request.form
         address_input = data.get('address', '').strip()
+        country = data.get('country', DEFAULT_COUNTRY)
         
         if not address_input:
             return jsonify({'error': 'Address or GPS coordinates required'}), 400
         
-        # Load boundaries
-        boundaries = load_boundaries()
+        # Get country configuration
+        country_config = get_country_config(country)
+        
+        # Load boundaries for the selected country
+        boundaries = load_boundaries(country)
         if boundaries is None:
-            return jsonify({'error': 'Boundary data not available'}), 500
+            return jsonify({'error': f'Boundary data not available for {country_config["name"]}'}), 500
         
         # Geocode the address
-        result = geocode_address(address_input)
+        result = geocode_address(address_input, country_config)
         
         if result is None:
             return jsonify({
@@ -230,19 +284,25 @@ def geocode_single():
         # Perform spatial join
         joined = spatial_join_boundaries(point_gdf, boundaries)
         
-        # Extract the result
+        # Extract the result - use admin level fields from country config
         if len(joined) > 0:
             row = joined.iloc[0]
+            admin_levels = country_config['admin_levels']
+            
             response_data = {
                 'success': True,
                 'address': address_input,
                 'latitude': lat,
                 'longitude': lon,
                 'confidence': confidence,
-                'parish_pcode': row.get('ADM1_PCODE'),
-                'parish_name': row.get('ADM1_EN'),
-                'community_pcode': row.get('ADM2_PCODE'),
-                'community_name': row.get('ADM2_EN')
+                'admin1_pcode': row.get(admin_levels['level1']['pcode_field']),
+                'admin1_name': row.get(admin_levels['level1']['name_field']),
+                'admin1_label': admin_levels['level1']['label'],
+                'admin2_pcode': row.get(admin_levels['level2']['pcode_field']),
+                'admin2_name': row.get(admin_levels['level2']['name_field']),
+                'admin2_label': admin_levels['level2']['label'],
+                'country': country_config['name'],
+                'country_code': country_config['code']
             }
             return jsonify(response_data)
         else:
@@ -262,21 +322,36 @@ def geocode_single():
 def get_boundaries():
     """Serve the boundaries GeoJSON file reprojected to WGS84 (public endpoint) with caching."""
     try:
-        # Load boundaries if not already loaded
-        load_boundaries()
+        # Get country parameter (default to jamaica)
+        country = request.args.get('country', DEFAULT_COUNTRY)
         
-        if boundaries_geojson_cache is None:
-            return jsonify({'error': 'Boundary file not found'}), 404
+        # Load boundaries if not already loaded
+        load_boundaries(country)
+        
+        country_config = get_country_config(country)
+        country_code = country_config['code']
+        
+        if country_code not in boundaries_geojson_cache:
+            return jsonify({'error': f'Boundary file not found for {country_config["name"]}'}), 404
         
         # Check if client has cached version (ETag)
         client_etag = request.headers.get('If-None-Match')
-        if client_etag and client_etag == f'"{boundaries_etag}"':
+        server_etag = boundaries_etag_cache.get(country_code)
+        
+        if client_etag and server_etag and client_etag == f'"{server_etag}"':
             return '', 304  # Not Modified
         
-        # Create response with caching headers
-        response = make_response(boundaries_geojson_cache)
+        # Create response with pre-compressed data
+        if country_code in boundaries_gzip_cache:
+            response = make_response(boundaries_gzip_cache[country_code])
+            response.headers['Content-Encoding'] = 'gzip'
+            response.headers['Content-Length'] = len(boundaries_gzip_cache[country_code])
+        else:
+            # Fallback to uncompressed (shouldn't happen if loaded correctly)
+            response = make_response(boundaries_geojson_cache[country_code])
+            
         response.headers['Content-Type'] = 'application/json'
-        response.headers['ETag'] = f'"{boundaries_etag}"'
+        response.headers['ETag'] = f'"{server_etag}"'
         response.headers['Cache-Control'] = 'public, max-age=86400'  # Cache for 24 hours
         
         return response
@@ -290,6 +365,7 @@ def reverse_geocode():
         data = request.get_json() if request.is_json else request.form
         lat = data.get('latitude') or data.get('lat')
         lon = data.get('longitude') or data.get('lon')
+        country = data.get('country', DEFAULT_COUNTRY)
         
         if lat is None or lon is None:
             return jsonify({'error': 'Latitude and longitude required'}), 400
@@ -300,10 +376,13 @@ def reverse_geocode():
         except ValueError:
             return jsonify({'error': 'Invalid latitude or longitude format'}), 400
         
-        # Load boundaries
-        boundaries = load_boundaries()
+        # Get country configuration
+        country_config = get_country_config(country)
+        
+        # Load boundaries for the selected country
+        boundaries = load_boundaries(country)
         if boundaries is None:
-            return jsonify({'error': 'Boundary data not available'}), 500
+            return jsonify({'error': f'Boundary data not available for {country_config["name"]}'}), 500
         
         # Create a point from the coordinates
         point = Point(lon, lat)
@@ -316,17 +395,23 @@ def reverse_geocode():
         # Perform spatial join
         joined = spatial_join_boundaries(point_gdf, boundaries)
         
-        # Extract the result
+        # Extract the result - use admin level fields from country config
         if len(joined) > 0:
             row = joined.iloc[0]
+            admin_levels = country_config['admin_levels']
+            
             response_data = {
                 'success': True,
                 'latitude': lat,
                 'longitude': lon,
-                'parish_pcode': row.get('ADM1_PCODE'),
-                'parish_name': row.get('ADM1_EN'),
-                'community_pcode': row.get('ADM2_PCODE'),
-                'community_name': row.get('ADM2_EN')
+                'admin1_pcode': row.get(admin_levels['level1']['pcode_field']),
+                'admin1_name': row.get(admin_levels['level1']['name_field']),
+                'admin1_label': admin_levels['level1']['label'],
+                'admin2_pcode': row.get(admin_levels['level2']['pcode_field']),
+                'admin2_name': row.get(admin_levels['level2']['name_field']),
+                'admin2_label': admin_levels['level2']['label'],
+                'country': country_config['name'],
+                'country_code': country_config['code']
             }
             return jsonify(response_data)
         else:
@@ -342,9 +427,36 @@ def reverse_geocode():
 
 @app.route('/health')
 def health():
-    return jsonify({'status': 'ok', 'boundaries_loaded': boundaries_gdf is not None})
+    countries_loaded = list(boundaries_cache.keys())
+    return jsonify({
+        'status': 'ok', 
+        'countries_loaded': countries_loaded,
+        'available_countries': [c['code'] for c in get_all_countries()]
+    })
+
+@app.route('/countries')
+def countries():
+    """Get list of available countries with their configurations."""
+    try:
+        countries_list = get_all_countries()
+        countries_data = []
+        
+        for country in countries_list:
+            config = get_country_config(country['key'])
+            countries_data.append({
+                'code': config['code'],
+                'name': config['name'],
+                'key': country['key'],
+                'map_center': config['map_center'],
+                'admin_levels': config['admin_levels']
+            })
+        
+        return jsonify(countries_data)
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
-    load_boundaries()
+    # Pre-load default country boundaries
+    load_boundaries(DEFAULT_COUNTRY)
     port = int(os.getenv('PORT', 5001))
     app.run(debug=True, host='0.0.0.0', port=port)
