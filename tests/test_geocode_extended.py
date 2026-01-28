@@ -1,0 +1,41 @@
+import pytest
+import pandas as pd
+import json
+from unittest.mock import patch, MagicMock
+from geocode import geocode_address, geocode_dataframe
+
+@patch('geocode.urlopen')
+def test_geocode_address_api_failure(mock_urlopen, mock_country_config):
+    # Setup mock response for API error or no results
+    mock_response = MagicMock()
+    mock_response.read.return_value = json.dumps({'status': 'ZERO_RESULTS', 'results': []}).encode('utf-8')
+    mock_response.__enter__.return_value = mock_response
+    mock_urlopen.return_value = mock_response
+
+    with patch('os.getenv', return_value='TEST_KEY'):
+        result = geocode_address("Nonexistent Place", mock_country_config)
+    
+    assert result is None
+
+@patch('geocode.geocode_address')
+def test_geocode_dataframe_failure(mock_geocode_addr, mock_country_config):
+    # Mock mixed success and failure (first call returns coords, second returns None)
+    mock_geocode_addr.side_effect = [
+        (18.123, -76.567, "ROOFTOP"),  # Good Address
+        None                            # Bad Address (API failure equivalent)
+    ]
+
+    df = pd.DataFrame({'address': ['Good Address', 'Bad Address']})
+    
+    with patch('os.getenv', return_value='TEST_KEY'):
+        result_gdf, stats = geocode_dataframe(df, delay=0.0, country_config=mock_country_config)
+
+    assert len(result_gdf) == 2
+    assert stats['successful'] == 1
+    assert stats['failed'] == 1
+    
+    # Check first row (Good)
+    assert result_gdf.iloc[0]['latitude'] == 18.123
+    
+    # Check second row (Bad)
+    assert pd.isna(result_gdf.iloc[1]['latitude'])
