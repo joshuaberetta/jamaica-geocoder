@@ -799,7 +799,7 @@
             <label for="countrySelect" style="display: block; font-weight: 600; color: #2c3e50; margin-bottom: 8px;">Select Country:</label>
             <select id="countrySelect" style="width: 100%; padding: 11px 12px; border: 1px solid #d1d5da; border-radius: 3px; font-size: 14px; background: white; cursor: pointer;">
                 {% for country in countries %}
-                <option value="{{ country.key }}">{{ country.name }}</option>
+                <option value="{{ country.key }}" data-code="{{ country.code }}">{{ country.name }}</option>
                 {% endfor %}
             </select>
         </div>
@@ -937,9 +937,9 @@
         // Country configurations - fetched from backend
         let countryConfigs = {};
         
-        // Get country from URL parameter or default to jamaica
+        // Get country from URL parameter or default to mozambique
         const urlParams = new URLSearchParams(window.location.search);
-        let currentCountry = urlParams.get('country') || 'jamaica';
+        let currentCountry = urlParams.get('country') || 'mozambique';
         let map;
         
         // Initialize map (will be centered dynamically)
@@ -956,7 +956,7 @@
                 map.remove(); 
             }
             
-            map = L.map('map').setView([18.1096, -77.2975], 9);
+            map = L.map('map').setView([-18.665695, 35.529562], 6);
             
             // Add OpenStreetMap tiles
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
@@ -1152,7 +1152,7 @@
         }
         
         // Load and display community boundaries with caching
-        async function loadBoundaries(country = 'jamaica') {
+        async function loadBoundaries(country = 'mozambique') {
             console.log(`Loading boundaries for ${country}...`);
             
             const spinner = document.getElementById('loading-spinner');
@@ -1286,10 +1286,23 @@
             // Robust check for current country
             if (!availableCountries.includes(currentCountry)) {
                 console.warn(`Requested country '${currentCountry}' not exactly found in options.`);
-                // Try case-insensitive matching
-                const match = availableCountries.find(c => c.toLowerCase() === currentCountry.toLowerCase());
+                
+                // Try case-insensitive matching against values
+                let match = availableCountries.find(c => c.toLowerCase() === currentCountry.toLowerCase());
+                
+                // If not found, try matching against data-code
+                if (!match) {
+                    const optionMatch = Array.from(countrySelect.options).find(opt => 
+                        opt.getAttribute('data-code') && 
+                        opt.getAttribute('data-code').toLowerCase() === currentCountry.toLowerCase()
+                    );
+                    if (optionMatch) {
+                        match = optionMatch.value;
+                    }
+                }
+                
                 if (match) {
-                    console.log(`Found case-insensitive match: ${match}`);
+                    console.log(`Found match: ${match}`);
                     currentCountry = match;
                 } else {
                     console.warn(`No match found. Defaulting to ${availableCountries[0]}`);
@@ -1319,6 +1332,22 @@
                 
                 // Now load boundaries
                 loadBoundaries(currentCountry);
+
+                // Check for address parameter in URL and trigger lookup
+                const addressParam = urlParams.get('address');
+                if (addressParam) {
+                    // We need to access elements that are defined later in the file, 
+                    // or just get them by ID to be safe
+                    const addrInput = document.getElementById('singleAddress');
+                    const btn = document.getElementById('geocodeSingleBtn');
+                    
+                    if (addrInput && btn) {
+                        addrInput.value = addressParam;
+                        console.log('Auto-geocoding address from URL:', addressParam);
+                        // Trigger click to start geocoding
+                        setTimeout(() => btn.click(), 500);
+                    }
+                }
             }).catch(err => {
                 console.error('Failed to load country configs:', err);
                 // Try to load boundaries anyway as fallback

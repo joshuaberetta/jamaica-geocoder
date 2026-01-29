@@ -140,7 +140,7 @@ def index():
 @login_required
 def geocode():
     try:
-        # Get country parameter (default to jamaica for backward compatibility)
+        # Get country parameter (default to mozambique for backward compatibility)
         country = request.form.get('country', DEFAULT_COUNTRY)
         country_config = get_country_config(country)
         
@@ -322,7 +322,7 @@ def geocode_single():
 def get_boundaries():
     """Serve the boundaries GeoJSON file reprojected to WGS84 (public endpoint) with caching."""
     try:
-        # Get country parameter (default to jamaica)
+        # Get country parameter (default to mozambique)
         country = request.args.get('country', DEFAULT_COUNTRY)
         
         # Load boundaries if not already loaded

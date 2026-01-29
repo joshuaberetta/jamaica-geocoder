@@ -6,7 +6,7 @@ from typing import Dict, Any, List
 
 # Available countries
 AVAILABLE_COUNTRIES = ['jamaica', 'mozambique']
-DEFAULT_COUNTRY = 'jamaica'
+DEFAULT_COUNTRY = 'mozambique'
 
 
 def get_country_config(country_code: str) -> Dict[str, Any]:
