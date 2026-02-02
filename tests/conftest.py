@@ -39,6 +39,27 @@ def mock_country_config():
     }
 
 @pytest.fixture
+def mock_mozambique_config():
+    return {
+        'code': 'MZ',
+        'name': 'Mozambique',
+        'bounds': {
+            'lat_min': -27.0, 'lat_max': -10.0,
+            'lon_min': 30.0, 'lon_max': 41.0
+        },
+        'map_center': {'lat': -18.5, 'lon': 35.5, 'zoom': 6},
+        'google_maps_region': 'mz',
+        'google_maps_components': 'country:MZ',
+        'boundary_file': 'boundaries/mozambique.geojson',
+        'admin_levels': {
+            'level1': {'pcode_field': 'ADM1_PCODE', 'name_field': 'ADM1_EN', 'label': 'Province'},
+            'level2': {'pcode_field': 'ADM2_PCODE', 'name_field': 'ADM2_EN', 'label': 'District'}
+        },
+        'spelling_corrections': {},
+        'fallback_parishes': []
+    }
+
+@pytest.fixture
 def sample_boundaries():
     # Create a simple square polygon for testing
     poly = Polygon([(-77.0, 18.0), (-76.0, 18.0), (-76.0, 19.0), (-77.0, 19.0), (-77.0, 18.0)])

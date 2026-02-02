@@ -289,9 +289,15 @@
         
         .options {
             display: grid;
-            grid-template-columns: 1fr 1fr;
+            grid-template-columns: repeat(3, 1fr);
             gap: 20px;
             margin-bottom: 24px;
+        }
+        
+        @media (max-width: 768px) {
+            .options {
+                grid-template-columns: 1fr;
+            }
         }
         
         .option-group {
@@ -306,7 +312,7 @@
             font-weight: 500;
         }
         
-        select, input[type="number"] {
+        select, input[type="number"], input[type="text"] {
             padding: 11px 12px;
             border: 1px solid #d1d5da;
             border-radius: 3px;
@@ -316,7 +322,7 @@
             transition: border-color 0.2s, box-shadow 0.2s;
         }
         
-        select:focus, input[type="number"]:focus {
+        select:focus, input[type="number"]:focus, input[type="text"]:focus {
             outline: none;
             border-color: #4A90E2;
             box-shadow: 0 0 0 3px rgba(74, 144, 226, 0.1);
@@ -859,6 +865,11 @@
                 </div>
                 
                 <div class="option-group">
+                    <label for="outputFilename">Output Filename (optional)</label>
+                    <input type="text" id="outputFilename" name="output_filename" placeholder="geocoded_addresses">
+                </div>
+                
+                <div class="option-group">
                     <label for="limit">Limit (optional)</label>
                     <input type="number" id="limit" name="limit" placeholder="All addresses" min="1">
                 </div>
@@ -908,6 +919,7 @@
                 <li>Optional columns: <code>date</code>, <code>name</code>, <code>hot_meals</code></li>
                 <li>Date format: <code>m/d</code> (will be converted to yyyy-mm-dd)</li>
                 <li>UTF-8 encoding for CSV files</li>
+                <li>Output filename: Leave blank for default or specify custom name (extension added automatically)</li>
             </ul>
         </div>
         {% else %}

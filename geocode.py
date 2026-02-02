@@ -2,7 +2,18 @@
 """
 Humanitarian Geocoder - Geocode addresses and match to administrative boundaries.
 Supports multiple countries for humanitarian response efforts.
-Uses Google Maps Geocoding API for accurate geocoding.
+
+Features:
+- Accepts both street addresses AND coordinates (lat, lon) in the address column
+- Street addresses are geocoded using Google Maps Geocoding API
+- Coordinates are used directly without API calls
+- All results are spatially joined to administrative boundaries for P-code assignment
+
+Input formats supported:
+- Street address: "123 Main St, Kingston, Jamaica"
+- Coordinates: "18.1234, -77.5678" or "18,1234 -77,5678" (period or comma as decimal separator)
+- Coordinates variations: "(18.1234, -77.5678)" or "18.1234 -77.5678"
+- Mixed files: Some rows with addresses, some with coordinates
 """
 
 import os
@@ -33,7 +44,7 @@ def parse_coordinates(text: str, country_config: Optional[Dict[str, Any]] = None
     """
     Try to parse coordinates from a text string.
     Supports formats like:
-    - "18.1234, -77.5678"
+    - "18.1234, -77.5678" or "18,1234 -77,5678" (period or comma as decimal separator)
     - "18.1234,-77.5678"
     - "18.1234 -77.5678"
     - "(18.1234, -77.5678)"
@@ -55,15 +66,24 @@ def parse_coordinates(text: str, country_config: Optional[Dict[str, Any]] = None
     # Remove parentheses if present
     text = text.strip('()')
     
-    # Try to match coordinate patterns
-    # Pattern: optional minus, digits, optional decimal point and digits, whitespace/comma, repeat
-    coord_pattern = r'^(-?\d+\.?\d*)\s*[,\s]\s*(-?\d+\.?\d*)$'
+    # Replace commas used as decimal separators with periods
+    # We need to distinguish between commas as separators vs decimal points
+    # Strategy: if we have exactly 2 numbers separated by space or comma/space,
+    # then any other commas are likely decimal separators
+    
+    # Try to match coordinate patterns (allowing comma or period as decimal separator)
+    # Pattern: optional minus, digits, optional decimal point/comma and digits, whitespace/comma, repeat
+    coord_pattern = r'^(-?\d+[.,]?\d*)\s*[,\s]\s*(-?\d+[.,]?\d*)$'
     match = re.match(coord_pattern, text)
     
     if match:
         try:
-            lat = float(match.group(1))
-            lon = float(match.group(2))
+            # Get the two coordinate strings and replace commas with periods for float parsing
+            lat_str = match.group(1).replace(',', '.')
+            lon_str = match.group(2).replace(',', '.')
+            
+            lat = float(lat_str)
+            lon = float(lon_str)
             
             # Normalize longitude sign based on country hemisphere
             lon = normalize_longitude(lon, country_config)
@@ -89,16 +109,17 @@ def geocode_address(full_address: str, country_config: Optional[Dict[str, Any]] 
     The caller should include any contextual fields (e.g. name) in the query.
     
     Parameters:
-    - full_address: Address string to geocode
+    - full_address: Address string to geocode OR coordinate string (e.g., "18.123, -77.456")
     - country_config: Country configuration dictionary (optional, defaults to Jamaica)
     
     Returns (latitude, longitude, confidence) or None if not found.
-    Confidence is the location_type from Google: ROOFTOP, RANGE_INTERPOLATED, GEOMETRIC_CENTER, or APPROXIMATE.
+    Confidence is the location_type from Google: ROOFTOP, RANGE_INTERPOLATED, GEOMETRIC_CENTER, APPROXIMATE,
+    or COORDINATES (if the input was already in coordinate format).
     
     If the address is already in coordinate format (lat, lon), returns those coordinates
-    with confidence 'COORDINATES'.
+    with confidence 'COORDINATES' WITHOUT making an API call.
     
-    Uses multiple fallback strategies to find approximate locations for vague addresses.
+    For addresses: Uses multiple fallback strategies to find approximate locations for vague addresses.
     """
     if country_config is None:
         country_config = get_country_config(DEFAULT_COUNTRY)
@@ -283,15 +304,24 @@ def geocode_dataframe(df: pd.DataFrame, address_column: str = 'address', delay: 
                      country_config: Optional[Dict[str, Any]] = None) -> Tuple[gpd.GeoDataFrame, dict]:
     """
     Geocode all addresses in a DataFrame and return a GeoDataFrame with statistics.
+    Accepts both street addresses (geocoded via API) and coordinates (used directly).
     
     Parameters:
-    - df: Input DataFrame with addresses
-    - address_column: Name of column containing addresses
-    - delay: Delay between requests in seconds (Google allows ~50 req/sec, 0.1s is safe)
+    - df: Input DataFrame with addresses or coordinates
+    - address_column: Name of column containing addresses or coordinates (lat, lon format)
+    - delay: Delay between API requests in seconds (Google allows about 50 req/sec, 0.1s is safe)
+             No delay applied for coordinate rows.
     - country_config: Country configuration dictionary (optional, defaults to Jamaica)
     
     Returns:
     - Tuple of (GeoDataFrame with point geometries, statistics dict)
+    
+    The address column can contain:
+    - Street addresses: "123 Main St, Kingston" -> geocoded via Google Maps API
+    - Coordinates: "18.1234, -77.5678" -> used directly without API call
+    - Mixed: Some rows with addresses, some with coordinates
+    
+    All results (geocoded or coordinates) are spatially joined to admin boundaries.
     """
     if country_config is None:
         country_config = get_country_config(DEFAULT_COUNTRY)
@@ -299,9 +329,9 @@ def geocode_dataframe(df: pd.DataFrame, address_column: str = 'address', delay: 
     latitudes = []
     longitudes = []
     confidences = []
-    stats = {'total': len(df), 'successful': 0, 'failed': 0, 'skipped': 0}
+    stats = {'total': len(df), 'successful': 0, 'failed': 0, 'skipped': 0, 'from_coordinates': 0, 'geocoded': 0}
     
-    print(f"\nGeocoding {len(df)} addresses for {country_config['name']}...")
+    print(f"\nProcessing {len(df)} addresses/coordinates for {country_config['name']}...")
     
     row_count = 0
     for idx, row in df.iterrows():
@@ -312,18 +342,16 @@ def geocode_dataframe(df: pd.DataFrame, address_column: str = 'address', delay: 
         coords_from_address = parse_coordinates(address, country_config) if address and pd.notna(address) else None
         
         if coords_from_address:
-            # Address is already coordinates, use directly
+            # Address is already coordinates, use directly (no API call needed)
             lat, lon = coords_from_address
             latitudes.append(lat)
             longitudes.append(lon)
             confidences.append('COORDINATES')
             stats['successful'] += 1
+            stats['from_coordinates'] += 1
             print(f"[{row_count}/{len(df)}] {address}")
-            print(f"  → {lat:.6f}, {lon:.6f} (COORDINATES)")
-            
-            # Still respect rate limit for consistency
-            if row_count < len(df):
-                time.sleep(delay)
+            print(f"  → {lat:.6f}, {lon:.6f} (COORDINATES - no API call)")
+            # No delay needed since no API call was made
             continue
         
         # If the CSV has a 'name' column, include it in the query to improve matching
@@ -355,6 +383,7 @@ def geocode_dataframe(df: pd.DataFrame, address_column: str = 'address', delay: 
                 longitudes.append(lon)
                 confidences.append(confidence)
                 stats['successful'] += 1
+                stats['geocoded'] += 1
                 print(f"  → {lat:.6f}, {lon:.6f} ({confidence})")
             else:
                 latitudes.append(None)
@@ -558,9 +587,11 @@ def process_addresses(
     points_gdf, stats = geocode_dataframe(df, address_column, delay, country_config)
     
     # Print statistics
-    print(f"\nGeocoding Statistics:")
+    print(f"\nProcessing Statistics:")
     print(f"  Total addresses: {stats['total']}")
-    print(f"  Successfully geocoded: {stats['successful']}")
+    print(f"  Successfully processed: {stats['successful']}")
+    print(f"    - From coordinates (no API call): {stats['from_coordinates']}")
+    print(f"    - Geocoded via API: {stats['geocoded']}")
     print(f"  Failed to geocode: {stats['failed']}")
     print(f"  Skipped (empty): {stats['skipped']}")
     
@@ -622,18 +653,27 @@ def main():
     if len(sys.argv) < 3:
         print("Humanitarian Geocoder - Multi-Country Address Geocoding")
         print("="*60)
-        print("\nUsage: python geocode.py <address_csv> <boundaries_geojson> [output_file] [--limit N] [--country CODE]")
+        print("\nUsage: python geocode.py <address_csv> <boundaries_geojson> [output_file] [OPTIONS]")
+        print("\nArguments:")
+        print("  address_csv         Input CSV file with addresses")
+        print("  boundaries_geojson  GeoJSON file with administrative boundaries")
+        print("  output_file         Output filename (default: geocoded_output.csv)")
+        print("\nOptions:")
+        print("  --limit N           Process only first N addresses")
+        print("  --country CODE      Country code (jamaica, mozambique, JM, MZ)")
         print("\nExamples:")
         print("  # Create .env file with your API key")
         print("  echo 'GOOGLE_MAPS_API_KEY=your-api-key-here' > .env")
-        print("  python geocode.py addresses.csv boundaries/jamaica.geojson output.csv")
-        print("\n  # Geocode for Mozambique")
-        print("  python geocode.py addresses.csv boundaries/mozambique.geojson output.csv --country mozambique")
+        print("\n  # Basic usage with custom output filename")
+        print("  python geocode.py addresses.csv boundaries/jamaica.geojson results.csv")
+        print("\n  # Geocode for Mozambique with custom filename")
+        print("  python geocode.py addresses.csv boundaries/mozambique.geojson mozambique_results.xlsx --country mozambique")
         print("\n  # Test with first 10 addresses")
-        print("  python geocode.py addresses.csv boundaries/jamaica.geojson output.xlsx --limit 10")
+        print("  python geocode.py addresses.csv boundaries/jamaica.geojson test_output.xlsx --limit 10")
         print("\n  # Output as GeoJSON")
         print("  python geocode.py addresses.csv boundaries/jamaica.geojson output.geojson")
-        print("\nThe CSV should have a column named 'address' with street addresses.")
+        print("\nThe CSV should have a column named 'address' with street addresses or coordinates.")
+        print("Coordinates can use period (18.123, -77.456) or comma (18,123 -77,456) as decimal separator.")
         print("\nRequired: Google Maps API key in .env file (GOOGLE_MAPS_API_KEY=your-key)")
         print("Get your API key at: https://console.cloud.google.com/google/maps-apis")
         print("\nSupported countries: jamaica (JM), mozambique (MZ)")

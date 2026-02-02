@@ -8,7 +8,11 @@ A multi-country web interface for geocoding addresses and matching them to admin
 - **Batch Processing**: Upload CSV files with multiple addresses.
 - **Single Address Lookup**: Type or paste an address or coordinate for instant results.
 - **Administrative Boundary Matching**: Automatically assigns P-codes (e.g., ADM1, ADM2) based on location using spatial joins.
-- **Coordinate Handling**: Smart detection of existing coordinates to bypass API calls.
+- **Flexible Input Format**: The address column accepts both:
+  - Street addresses: "123 Main St, Kingston, Jamaica" (geocoded via Google Maps API)
+  - GPS coordinates: "18.1234, -77.5678" or "18,1234 -77,5678" (period or comma as decimal separator)
+  - Mixed files: Some rows with addresses, some with coordinates
+- **Smart Coordinate Detection**: Coordinates bypass API calls for cost savings and faster processing.
 - **Improved Accuracy**: Multi-strategy geocoding tailored for difficult addresses.
 - **Interactive Map**: Visualize results and click to identify regions.
 - **Export**: Download results as CSV or Excel.
@@ -139,5 +143,9 @@ This application is designed to be deployed on a Linux server (e.g., DigitalOcea
 ## Development History & Improvements
 
 - **Geocoding Success Rate**: Improved from ~20% to >90% for difficult addresses through smarter parsing and coordinate detection.
-- **Input Flexibility**: Added support for direct coordinate input (e.g., `18.1234, -77.5678`) which bypasses the geocoding API for cost savings.
+- **Input Flexibility**: The address column now accepts both street addresses AND GPS coordinates:
+  - Coordinates are automatically detected and used directly (no API call)
+  - Addresses are geocoded via Google Maps API
+  - All results (coordinates or geocoded) receive P-code assignments via spatial join
+  - Mixed input files are fully supported
 - **Admin Boundaries**: Integrated strict spatial joining to ensure points fall within valid administrative boundaries for the selected country.

@@ -9,9 +9,13 @@ import logging
 from geocode import parse_coordinates, geocode_dataframe, spatial_join_boundaries
 
 def test_parse_coordinates(mock_country_config):
-    # Valid coordinates
+    # Valid coordinates with period as decimal separator
     assert parse_coordinates("18.123, -77.456", mock_country_config) == (18.123, -77.456)
     assert parse_coordinates("18.123 -77.456", mock_country_config) == (18.123, -77.456)
+    
+    # Valid coordinates with comma as decimal separator (European format)
+    assert parse_coordinates("18,123 -77,456", mock_country_config) == (18.123, -77.456)
+    assert parse_coordinates("18,123, -77,456", mock_country_config) == (18.123, -77.456)
     
     # Invalid coordinates
     assert parse_coordinates("Not a coordinate", mock_country_config) is None
@@ -39,6 +43,8 @@ def test_geocode_dataframe_success(mock_urlopen, sample_dataframe, mock_google_a
     assert len(result_gdf) == 2
     assert stats['successful'] == 2
     assert stats['failed'] == 0
+    assert stats['from_coordinates'] == 1  # One coordinate parsed directly
+    assert stats['geocoded'] == 1  # One address geocoded via API
     
     # Check "Test Address" was geocoded
     assert result_gdf.iloc[0]['latitude'] == 18.123
@@ -72,3 +78,17 @@ def test_spatial_join_boundaries(sample_boundaries):
     # Point outside should be matched to nearest (which is the same one in this 1-polygon world)
     row_outside = joined[joined['id'] == 2].iloc[0]
     assert row_outside['ADM1_EN'] == 'Test Parish'
+
+def test_parse_coordinates_mozambique(mock_mozambique_config):
+    """Test parsing Mozambique coordinates with comma as decimal separator (European format)."""
+    # The exact format from the screenshot: -24,6553835 33,3265245
+    result = parse_coordinates("-24,6553835 33,3265245", mock_mozambique_config)
+    assert result is not None
+    lat, lon = result
+    assert abs(lat - (-24.6553835)) < 0.0001
+    assert abs(lon - 33.3265245) < 0.0001
+    
+    # Also test with space between coordinates
+    result2 = parse_coordinates("-24,6553835  33,3265245", mock_mozambique_config)
+    assert result2 is not None
+    assert result == result2

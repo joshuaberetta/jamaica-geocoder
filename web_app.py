@@ -159,6 +159,9 @@ def geocode():
         # Get limit parameter if provided
         limit = request.form.get('limit', type=int)
         
+        # Get custom output filename if provided
+        output_filename = request.form.get('output_filename', '').strip()
+        
         # Read the CSV file
         try:
             # Check file extension to determine how to read it
@@ -215,16 +218,23 @@ def geocode():
         # Check requested format
         output_format = request.form.get('format', 'csv')
         
+        # Determine filename
+        if output_filename:
+            # Remove any existing extension from custom filename
+            base_filename = output_filename.rsplit('.', 1)[0]
+        else:
+            base_filename = 'geocoded_addresses'
+        
         if output_format == 'xlsx':
             result_df.to_excel(output, index=False, engine='openpyxl')
             output.seek(0)
             mimetype = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-            filename = 'geocoded_addresses.xlsx'
+            filename = f'{base_filename}.xlsx'
         else:
             result_df.to_csv(output, index=False)
             output.seek(0)
             mimetype = 'text/csv'
-            filename = 'geocoded_addresses.csv'
+            filename = f'{base_filename}.csv'
         
         # Encode file as base64 to send with JSON
         import base64
