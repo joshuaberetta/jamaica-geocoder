@@ -39,6 +39,15 @@ load_dotenv()
 # Google Maps API key (loaded from .env file)
 GOOGLE_MAPS_API_KEY = os.getenv('GOOGLE_MAPS_API_KEY', '')
 
+# Settlement types for Places API - prioritizes populated places over other features
+SETTLEMENT_TYPES = [
+    'locality',           # Cities, towns, villages
+    'sublocality',        # Neighborhoods within cities
+    'postal_town',        # Postal towns
+    'neighborhood',       # Named neighborhoods
+    'administrative_area_level_3'  # Small administrative areas (often communities/towns)
+]
+
 
 def parse_coordinates(text: str, country_config: Optional[Dict[str, Any]] = None) -> Optional[Tuple[float, float]]:
     """
@@ -162,140 +171,151 @@ def geocode_address(full_address: str, country_config: Optional[Dict[str, Any]] 
             queries_to_try.append(f"{base}, {location}, {country_name}")
     
     best_result = None
-    best_quality = -1  # Track quality: 4=ROOFTOP, 3=RANGE_INTERPOLATED, 2=GEOMETRIC_CENTER, 1=APPROXIMATE, 0=vague
+    best_quality = -1  # Track quality: Higher values = better
     
+    # PRIMARY APPROACH: Google Places API with settlement type filtering
+    # This biases results toward populated places (towns, cities, neighborhoods) over
+    # random features like roads, establishments, or points of interest when there are
+    # multiple places with the same name in a country.
     for attempt_query in queries_to_try:
-        params = {
-            'address': attempt_query,
-            'key': GOOGLE_MAPS_API_KEY,
-            'region': country_config['google_maps_region'],
-            'components': country_config['google_maps_components']
-        }
-
-        url = f"https://maps.googleapis.com/maps/api/geocode/json?{urlencode(params)}"
-
         try:
+            # Build location restriction to country bounds for better filtering
+            bounds = country_config.get('bounds')
+            location_bias = ''
+            if bounds:
+                # Use rectangular bounds for location biasing
+                lat_min = bounds['lat_min']
+                lat_max = bounds['lat_max']
+                lon_min = bounds['lon_min']
+                lon_max = bounds['lon_max']
+                location_bias = f"&locationbias=rectangle:{lat_min},{lon_min}|{lat_max},{lon_max}"
+            
+            places_params = {
+                'query': attempt_query,
+                'key': GOOGLE_MAPS_API_KEY,
+                'region': country_config['google_maps_region'],
+            }
+            
+            places_url = f"https://maps.googleapis.com/maps/api/place/textsearch/json?{urlencode(places_params)}{location_bias}"
+            
+            with urlopen(places_url, timeout=10) as response:
+                data = json.loads(response.read().decode())
+                
+                if data.get('status') == 'OK' and data.get('results'):
+                    # Process all results and score by settlement type priority
+                    for result in data['results']:
+                        result_types = set(result.get('types', []))
+                        
+                        # Verify result is within country bounds
+                        location = result['geometry']['location']
+                        lat = float(location['lat'])
+                        lon = float(location['lng'])
+                        
+                        if not validate_coordinates(lat, lon, country_config):
+                            continue
+                        
+                        # Score based on settlement type hierarchy
+                        # Higher score = more likely to be a settlement rather than a random feature
+                        quality = 0
+                        
+                        # Primary settlement types (highest priority)
+                        if 'locality' in result_types:  # Cities, towns, villages
+                            quality = 10
+                        elif 'postal_town' in result_types:
+                            quality = 9
+                        elif 'sublocality' in result_types or 'sublocality_level_1' in result_types:
+                            quality = 8
+                        elif 'neighborhood' in result_types:
+                            quality = 7
+                        elif 'administrative_area_level_3' in result_types:  # Small admin areas
+                            quality = 6
+                        elif 'administrative_area_level_2' in result_types:  # Districts
+                            quality = 5
+                        # Secondary types (lower priority)
+                        elif 'postal_code' in result_types:
+                            quality = 4
+                        elif 'route' in result_types or 'street_address' in result_types:
+                            quality = 3
+                        elif 'premise' in result_types or 'establishment' in result_types:
+                            quality = 2
+                        elif 'point_of_interest' in result_types:
+                            quality = 1
+                        else:
+                            quality = 0  # Unknown or too generic
+                        
+                        # Update best result if this is better
+                        if quality > best_quality:
+                            best_quality = quality
+                            
+                            # Create descriptive confidence string
+                            if quality >= 7:
+                                confidence = 'SETTLEMENT'  # High confidence settlement
+                            elif quality >= 4:
+                                confidence = 'AREA'  # Administrative area or postal code
+                            elif quality >= 2:
+                                confidence = 'PLACE'  # Specific place/address
+                            else:
+                                confidence = 'APPROXIMATE'  # Generic result
+                            
+                            best_result = (lat, lon, confidence)
+                            place_name = result.get('name', 'Unknown')
+                            print(f"  Found via Places API: {place_name} (types: {', '.join(list(result_types)[:3])}...)")
+                            
+                            # If we found a high-quality settlement, stop searching
+                            if quality >= 8:
+                                return best_result
+        
+        except (URLError, HTTPError, json.JSONDecodeError) as e:
+            print(f"  Error with Places API for '{attempt_query}': {e}")
+            continue
+        except Exception as e:
+            print(f"  Unexpected error with Places API for '{attempt_query}': {e}")
+            continue
+    
+    # Return best result if found
+    if best_result:
+        return best_result
+    
+    # FALLBACK: Try Geocoding API for precise addresses (street addresses with numbers)
+    # Only use this for queries that look like specific street addresses
+    if re.search(r'\d+', query):  # Has numbers, might be a street address
+        try:
+            params = {
+                'address': query,
+                'key': GOOGLE_MAPS_API_KEY,
+                'region': country_config['google_maps_region'],
+                'components': country_config['google_maps_components']
+            }
+
+            url = f"https://maps.googleapis.com/maps/api/geocode/json?{urlencode(params)}"
+
             with urlopen(url, timeout=10) as response:
                 data = json.loads(response.read().decode())
 
-                status = data.get('status')
-                if status == 'OK' and data.get('results'):
+                if data.get('status') == 'OK' and data.get('results'):
                     result = data['results'][0]
                     location = result['geometry']['location']
                     geometry = result.get('geometry', {})
                     location_type = geometry.get('location_type', 'UNKNOWN')
                     
-                    # Verify the result is in the correct country by checking country component
+                    # Verify the result is in the correct country
                     address_components = result.get('address_components', [])
                     is_correct_country = any(
                         'country' in comp.get('types', []) and comp.get('short_name') == country_config['code']
                         for comp in address_components
                     )
                     
-                    if not is_correct_country:
-                        continue
-                    
-                    # Accept results with meaningful location data
-                    acceptable_types = [
-                        'locality',           # Towns, cities, villages
-                        'sublocality',        # Neighborhoods within cities
-                        'neighborhood',       # Named neighborhoods
-                        'administrative_area_level_1',  # Provinces/States/Parishes
-                        'administrative_area_level_2',  # Districts
-                        'administrative_area_level_3',  # Communities
-                        'postal_code',        # Postal codes
-                        'route',              # Street names
-                        'street_address',     # Full street addresses
-                        'premise',            # Buildings
-                        'point_of_interest',  # POIs like orphanages, schools, etc.
-                        'establishment',      # Named establishments
-                        'natural_feature'     # Geographic features
-                    ]
-                    
-                    has_specific_location = any(
-                        any(t in comp.get('types', []) for t in acceptable_types)
-                        for comp in address_components
-                    )
-                    
-                    # Even if no specific location, accept if it has admin area data
-                    has_admin_area = any(
-                        'administrative_area_level_1' in comp.get('types', [])
-                        for comp in address_components
-                    )
-                    
-                    if not has_specific_location and not has_admin_area:
-                        continue
-                    
-                    lat = float(location['lat'])
-                    lon = float(location['lng'])
-                    
-                    # Validate coordinates against country bounds
-                    if not validate_coordinates(lat, lon, country_config):
-                        continue
-                    
-                    # Rank result quality
-                    quality = 0
-                    if location_type == 'ROOFTOP':
-                        quality = 4
-                    elif location_type == 'RANGE_INTERPOLATED':
-                        quality = 3
-                    elif location_type == 'GEOMETRIC_CENTER':
-                        quality = 2
-                    elif location_type == 'APPROXIMATE':
-                        if has_specific_location:
-                            quality = 1  # Acceptable approximate location
-                        else:
-                            quality = 0  # Too vague (just admin area)
-                    
-                    # Keep the best result
-                    if quality > best_quality:
-                        best_quality = quality
-                        best_result = (lat, lon, location_type)
+                    if is_correct_country:
+                        lat = float(location['lat'])
+                        lon = float(location['lng'])
                         
-                        # If we found a high-quality result, stop trying
-                        if quality >= 2:
-                            break
-                
-                elif status == 'ZERO_RESULTS':
-                    continue
-                    
-        except (URLError, HTTPError, json.JSONDecodeError) as e:
-            print(f"  Error geocoding '{attempt_query}': {e}")
-            continue
+                        # Validate coordinates against country bounds
+                        if validate_coordinates(lat, lon, country_config):
+                            print(f"  Found via Geocoding API: {location_type}")
+                            return (lat, lon, location_type)
+        
         except Exception as e:
-            print(f"  Unexpected error geocoding '{attempt_query}': {e}")
-            continue
-    
-    # Return best result found, or None
-    if best_result and best_quality >= 1:
-        return best_result
-    
-    # Final fallback: try Google Places API Text Search for very vague queries
-    try:
-        places_params = {
-            'query': full_address,
-            'key': GOOGLE_MAPS_API_KEY,
-            'region': country_config['google_maps_region'],
-        }
-        
-        places_url = f"https://maps.googleapis.com/maps/api/place/textsearch/json?{urlencode(places_params)}"
-        
-        with urlopen(places_url, timeout=10) as response:
-            data = json.loads(response.read().decode())
-            
-            if data.get('status') == 'OK' and data.get('results'):
-                result = data['results'][0]
-                location = result['geometry']['location']
-                
-                lat = float(location['lat'])
-                lon = float(location['lng'])
-                
-                # Verify bounds
-                if validate_coordinates(lat, lon, country_config):
-                    print(f"  Found via Places API: {result.get('name')}")
-                    return (lat, lon, 'PLACES_API')
-    except Exception as e:
-        pass  # Silently fail Places API fallback
+            pass  # Silently fail Geocoding API fallback
     
     return None
 
