@@ -31,3 +31,21 @@ CREATE INDEX IF NOT EXISTS cod_adm_geom_idx   ON cod_adm USING GIST (geom);
 -- Fast country and level filtering.
 CREATE INDEX IF NOT EXISTS cod_adm_iso2_idx   ON cod_adm (iso2);
 CREATE INDEX IF NOT EXISTS cod_adm_level_idx  ON cod_adm (adm_level);
+
+-- Materialized view: pre-aggregated country list for the /countries endpoint.
+-- Eliminates the expensive ST_Extent(geom) scan on every cold-cache request.
+-- Refresh with: REFRESH MATERIALIZED VIEW CONCURRENTLY mv_countries
+CREATE MATERIALIZED VIEW IF NOT EXISTS mv_countries AS
+    SELECT
+        iso2,
+        iso3,
+        country_name,
+        MAX(adm_level)                              AS max_adm_level,
+        ST_X(ST_Centroid(ST_Extent(geom)))          AS center_lon,
+        ST_Y(ST_Centroid(ST_Extent(geom)))          AS center_lat
+    FROM cod_adm
+    GROUP BY iso2, iso3, country_name
+    ORDER BY country_name;
+
+-- Unique index required for CONCURRENTLY refresh (non-locking).
+CREATE UNIQUE INDEX IF NOT EXISTS mv_countries_iso2_idx ON mv_countries (iso2);

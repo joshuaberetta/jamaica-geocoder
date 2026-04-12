@@ -1,4 +1,4 @@
-import { Anchor, Container, Divider, Group, Stack, Text } from '@mantine/core';
+import { Anchor, Container, Group, Stack, Tabs, Text } from '@mantine/core';
 import { useState } from 'react';
 import { AppHeader } from '../components/AppHeader';
 import { BatchUpload } from '../components/BatchUpload';
@@ -19,6 +19,7 @@ function KoboFooterIcon() {
 export function MainPage() {
   const [selectedCountry, setSelectedCountry] = useState<Country | null>(null);
   const [mapCenter, setMapCenter] = useState<{ lat: number; lon: number; zoom: number } | null>(null);
+  const [activeTab, setActiveTab] = useState<string>('single');
 
   const handleCountryChange = (country: Country | null) => {
     setSelectedCountry(country);
@@ -30,25 +31,41 @@ export function MainPage() {
       <AppHeader />
 
       <Container size="md">
-        <Stack gap="xl">
+        <Stack gap="lg">
           <div>
             <Text size="xl" fw={500} mb={4}>Humanitarian Geocoder</Text>
             <Text size="sm" c="dimmed">
-              Enter a single address or upload a CSV file to geocode and match to administrative boundaries.
+              Select a country, then look up a single address, pick a point on the map, or process a batch file.
             </Text>
           </div>
 
           <CountrySelect value={selectedCountry?.code ?? null} onChange={handleCountryChange} />
 
-          <SingleAddressLookup country={selectedCountry?.code ?? null} />
+          <Tabs value={activeTab} onChange={(v) => v && setActiveTab(v)} variant="outline">
+            <Tabs.List>
+              <Tabs.Tab value="single">Single Lookup</Tabs.Tab>
+              <Tabs.Tab value="map">Map Picker</Tabs.Tab>
+              <Tabs.Tab value="batch">Batch Processing</Tabs.Tab>
+            </Tabs.List>
 
-          <Divider label="OR" labelPosition="center" />
+            <Tabs.Panel value="single" pt="md">
+              <SingleAddressLookup country={selectedCountry?.code ?? null} />
+            </Tabs.Panel>
 
-          <MapSection country={selectedCountry?.code ?? null} mapCenter={mapCenter} />
+            {/* MapSection rendered outside Tabs.Panel so it is never unmounted — Leaflet
+                errors when its container DOM node is reused after being destroyed. */}
+            <div style={{ display: activeTab === 'map' ? 'block' : 'none', paddingTop: 16 }}>
+              <MapSection
+                country={selectedCountry?.code ?? null}
+                mapCenter={mapCenter}
+                isVisible={activeTab === 'map'}
+              />
+            </div>
 
-          <Divider label="OR" labelPosition="center" />
-
-          <BatchUpload country={selectedCountry?.code ?? null} />
+            <Tabs.Panel value="batch" pt="md">
+              <BatchUpload country={selectedCountry?.code ?? null} />
+            </Tabs.Panel>
+          </Tabs>
 
           <Group justify="center" mt="md" style={{ borderTop: '1px solid #e8e8e8', paddingTop: 16 }}>
             <Text size="xs" c="dimmed">

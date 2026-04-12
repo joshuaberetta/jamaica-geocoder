@@ -5,7 +5,8 @@ export function useAvailableLevels(iso2: string | null) {
   const [levels, setLevels] = useState<number[]>([]);
 
   useEffect(() => {
-    if (!iso2) { setLevels([]); return; }
+    setLevels([]);
+    if (!iso2) return;
     fetchAvailableLevels(iso2)
       .then((data) => setLevels((data.levels ?? []).filter((l) => l > 0)))
       .catch(() => setLevels([]));

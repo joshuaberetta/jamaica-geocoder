@@ -131,13 +131,9 @@ def countries():
         with get_db_conn() as conn:
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                 cur.execute("""
-                    SELECT
-                        iso2, iso3, country_name,
-                        MAX(adm_level) AS max_adm_level,
-                        ST_X(ST_Centroid(ST_Extent(geom))) AS center_lon,
-                        ST_Y(ST_Centroid(ST_Extent(geom))) AS center_lat
-                    FROM cod_adm
-                    GROUP BY iso2, iso3, country_name
+                    SELECT iso2, iso3, country_name,
+                           max_adm_level, center_lon, center_lat
+                    FROM mv_countries
                     ORDER BY country_name
                 """)
                 rows = cur.fetchall()
@@ -631,6 +627,16 @@ def clear_cache():
     with _cache_lock:
         _countries_cache.clear()
         _boundaries_cache.clear()
+
+    # Rebuild the materialized view so the next cold-cache hit is instant.
+    try:
+        with get_db_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_countries")
+            conn.commit()
+    except Exception as e:
+        return jsonify({"status": "error", "message": f"Cache cleared but view refresh failed: {e}"}), 500
+
     return jsonify({"status": "ok", "message": "Cache cleared"})
 
 

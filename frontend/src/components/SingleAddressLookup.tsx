@@ -1,4 +1,4 @@
-import { Alert, Button, Group, Paper, Stack, TextInput, Text } from '@mantine/core';
+import { Alert, Button, Group, Paper, Stack, TextInput } from '@mantine/core';
 import { useState } from 'react';
 import { geocodeSingle } from '../api/client';
 import type { PcodeResult } from '../api/types';
@@ -33,7 +33,6 @@ export function SingleAddressLookup({ country, onResult }: Props) {
   return (
     <Paper withBorder p="md" radius="sm">
       <Stack gap="sm">
-        <Text fw={500} size="lg">Single Address Lookup</Text>
         <Group gap="sm" align="flex-end">
           <TextInput
             style={{ flex: 1 }}

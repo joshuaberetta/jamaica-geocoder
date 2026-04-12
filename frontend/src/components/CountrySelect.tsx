@@ -3,6 +3,24 @@ import { useSearchParams } from 'react-router-dom';
 import { useEffect } from 'react';
 import { useCountries } from '../hooks/useCountries';
 import type { Country } from '../api/types';
+import type { OptionsFilter } from '@mantine/core';
+
+function fuzzyMatch(str: string, query: string): boolean {
+  const s = str.toLowerCase();
+  const q = query.toLowerCase();
+  let si = 0;
+  for (let qi = 0; qi < q.length; qi++) {
+    si = s.indexOf(q[qi], si);
+    if (si === -1) return false;
+    si++;
+  }
+  return true;
+}
+
+const fuzzyFilter: OptionsFilter = ({ options, search }) =>
+  options.filter(
+    (opt) => 'label' in opt && fuzzyMatch(opt.label, search)
+  );
 
 interface Props {
   value: string | null;
@@ -36,6 +54,7 @@ export function CountrySelect({ value, onChange }: Props) {
         onChange(found);
       }}
       searchable
+      filter={fuzzyFilter}
       styles={{ root: { maxWidth: '100%' } }}
     />
   );

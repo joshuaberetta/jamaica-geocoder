@@ -19,6 +19,7 @@ L.Icon.Default.mergeOptions({
 interface Props {
   country: string | null;
   mapCenter: { lat: number; lon: number; zoom: number } | null;
+  isVisible?: boolean;
 }
 
 interface ClickHandlerProps {
@@ -26,14 +27,28 @@ interface ClickHandlerProps {
   onResult: (result: PcodeResult, lat: number, lon: number) => void;
 }
 
-/** Pans/zooms the map imperatively when mapCenter prop changes. Must be a child of MapContainer. */
-function MapController({ center }: { center: { lat: number; lon: number; zoom: number } | null }) {
+/**
+ * Single component that handles both resize correction and bounds fitting.
+ * invalidateSize() must happen before fitBounds(), and fitBounds() must be
+ * deferred via requestAnimationFrame so the browser has had a chance to
+ * apply the new container dimensions after display:none → display:block.
+ */
+function MapViewManager({ geojson, isVisible }: { geojson: FeatureCollection | null; isVisible: boolean }) {
   const map = useMap();
   useEffect(() => {
-    if (center) {
-      map.setView([center.lat, center.lon], center.zoom);
-    }
-  }, [center, map]);
+    if (!isVisible) return;
+    map.invalidateSize();
+    if (!geojson || !geojson.features.length) return;
+    const raf = requestAnimationFrame(() => {
+      try {
+        const bounds = L.geoJSON(geojson).getBounds();
+        if (bounds.isValid()) map.fitBounds(bounds, { padding: [20, 20] });
+      } catch {
+        // ignore malformed geometries
+      }
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [geojson, isVisible, map]);
   return null;
 }
 
@@ -52,7 +67,7 @@ function ClickHandler({ country, onResult }: ClickHandlerProps) {
   return null;
 }
 
-export function MapSection({ country, mapCenter }: Props) {
+export function MapSection({ country, mapCenter, isVisible = true }: Props) {
   const levels = useAvailableLevels(country);
   const [selectedLevel, setSelectedLevel] = useState<number>(2);
   const [geojson, setGeojson] = useState<FeatureCollection | null>(null);
@@ -60,22 +75,27 @@ export function MapSection({ country, mapCenter }: Props) {
   const [markerPos, setMarkerPos] = useState<[number, number] | null>(null);
   const [result, setResult] = useState<PcodeResult | null>(null);
 
-  // Pick a sensible default level when available levels load
+  // Pick a sensible default level when the available levels for a country load.
   useEffect(() => {
     if (!levels.length) return;
     const preferred = levels.includes(2) ? 2 : levels[levels.length - 1];
     setSelectedLevel(preferred);
   }, [levels]);
 
-  // Load boundary GeoJSON whenever country or level changes
+  // Load boundary GeoJSON whenever country or level changes.
+  // Clears geojson immediately so the old layer is never visible alongside the new one.
+  // Uses AbortController so stale in-flight requests are cancelled when deps change.
   useEffect(() => {
-    if (!country) { setGeojson(null); return; }
+    setGeojson(null);
+    if (!country) return;
+    const controller = new AbortController();
     setLoadingBoundary(true);
-    fetch(`/boundaries.geojson?country=${country}&level=${selectedLevel}`)
+    fetch(`/boundaries.geojson?country=${country}&level=${selectedLevel}`, { signal: controller.signal })
       .then((r) => r.ok ? r.json() : null)
-      .then((data) => setGeojson(data))
-      .catch(() => setGeojson(null))
-      .finally(() => setLoadingBoundary(false));
+      .then((data) => { if (!controller.signal.aborted) setGeojson(data); })
+      .catch((err) => { if (err.name !== 'AbortError') setGeojson(null); })
+      .finally(() => { if (!controller.signal.aborted) setLoadingBoundary(false); });
+    return () => controller.abort();
   }, [country, selectedLevel]);
 
   const handleMapClick = (res: PcodeResult, lat: number, lon: number) => {
@@ -88,7 +108,6 @@ export function MapSection({ country, mapCenter }: Props) {
   return (
     <Paper withBorder p="md" radius="sm">
       <Stack gap="sm">
-        <Text fw={500} size="lg">Select Point from Map</Text>
         <Text size="sm" c="dimmed">
           Click anywhere on the map to get P-code information for that location.
         </Text>
@@ -103,13 +122,13 @@ export function MapSection({ country, mapCenter }: Props) {
           />
         )}
 
-        <Box style={{ position: 'relative' }}>
+        <Box style={{ position: 'relative', zIndex: 0 }}>
           <MapContainer
             center={[10, 20]}
             zoom={2}
             style={{ height: 400, width: '100%', borderRadius: 4, border: '1px solid #d1d5da' }}
           >
-            <MapController center={mapCenter} />
+            <MapViewManager geojson={geojson} isVisible={isVisible} />
             <TileLayer
               url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
               attribution="&copy; OpenStreetMap contributors"
@@ -119,12 +138,7 @@ export function MapSection({ country, mapCenter }: Props) {
               <GeoJSON
                 key={`${country}-${selectedLevel}`}
                 data={geojson}
-                style={{
-                  color: '#3a7fc1',
-                  weight: 1,
-                  fillOpacity: 0.05,
-                  fillColor: '#3a7fc1',
-                }}
+                style={{ color: '#3a7fc1', weight: 1, fillOpacity: 0.05, fillColor: '#3a7fc1' }}
               />
             )}
             {markerPos && <Marker position={markerPos} />}
@@ -158,4 +172,3 @@ export function MapSection({ country, mapCenter }: Props) {
     </Paper>
   );
 }
-
