@@ -20,10 +20,9 @@ from flask import (
     Flask,
     jsonify,
     redirect,
-    render_template,
     request,
+    send_from_directory,
     session,
-    url_for,
 )
 from flask_compress import Compress
 from flask_cors import CORS
@@ -63,7 +62,7 @@ def login_required(f):
     @wraps(f)
     def decorated(*args, **kwargs):
         if not session.get("logged_in"):
-            return redirect(url_for("login"))
+            return jsonify({"error": "Authentication required"}), 401
         return f(*args, **kwargs)
 
     return decorated
@@ -89,34 +88,20 @@ def check_db():
 # ---------------------------------------------------------------------------
 
 
-@app.route("/login", methods=["GET", "POST"])
+@app.route("/login", methods=["POST"])
 def login():
-    if request.method == "POST":
-        username = request.form.get("username")
-        password = request.form.get("password")
-        if username == USERNAME and password == PASSWORD:
-            session["logged_in"] = True
-            return redirect(url_for("index"))
-        return render_template("login.html", error="Invalid username or password")
-    if session.get("logged_in"):
-        return redirect(url_for("index"))
-    return render_template("login.html")
+    username = request.form.get("username")
+    password = request.form.get("password")
+    if username == USERNAME and password == PASSWORD:
+        session["logged_in"] = True
+        return redirect("/")
+    return "Invalid username or password", 401
 
 
 @app.route("/logout")
 def logout():
     session.pop("logged_in", None)
-    return redirect(url_for("index"))
-
-
-# ---------------------------------------------------------------------------
-# Main page
-# ---------------------------------------------------------------------------
-
-
-@app.route("/")
-def index():
-    return render_template("index.html", logged_in=session.get("logged_in", False))
+    return redirect("/")
 
 
 # ---------------------------------------------------------------------------
@@ -625,6 +610,16 @@ def health():
 
 
 # ---------------------------------------------------------------------------
+# Auth state (used by SPA to check session)
+# ---------------------------------------------------------------------------
+
+
+@app.route("/api/auth")
+def auth_state():
+    return jsonify({"logged_in": bool(session.get("logged_in"))})
+
+
+# ---------------------------------------------------------------------------
 # Cache invalidation (called after ingest)
 # ---------------------------------------------------------------------------
 
@@ -642,6 +637,24 @@ def clear_cache():
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# SPA catch-all — serve the React build for any non-API route
+# ---------------------------------------------------------------------------
+
+_STATIC_FOLDER = os.path.join(os.path.dirname(__file__), "static")
+
+
+@app.route("/", defaults={"path": ""})
+@app.route("/<path:path>")
+def serve_spa(path: str):
+    """Serve the compiled React SPA for any route not matched by the API."""
+    target = os.path.join(_STATIC_FOLDER, path)
+    if path and os.path.exists(target):
+        return send_from_directory(_STATIC_FOLDER, path)
+    return send_from_directory(_STATIC_FOLDER, "index.html")
+
 
 if __name__ == "__main__":
     check_db()

@@ -9,7 +9,8 @@ A self-hosted geocoding service backed by [OCHA COD-AB](https://cod.unocha.org/)
 - **Flexible input** — street addresses (via Google Maps API) and GPS coordinates in the same file
 - **Batch CSV/XLSX upload** — auth-protected; download enriched file with P-codes appended
 - **Single address lookup** and **reverse geocode** (click map or POST lat/lon)
-- **Interactive map** — country selector, map-click to geocode, province filter
+- **Interactive map** — country selector, map-click to geocode, boundary level filter
+- **React SPA** — frontend built with React 18, TypeScript, and [Mantine](https://mantine.dev/) v9
 - **REST API** — all endpoints return JSON
 
 ---
@@ -18,7 +19,8 @@ A self-hosted geocoding service backed by [OCHA COD-AB](https://cod.unocha.org/)
 
 | Component | Role |
 |-----------|------|
-| **Flask** | Web server and API |
+| **React + TypeScript** | SPA frontend (Vite, Mantine v9, react-leaflet) |
+| **Flask** | Web server, REST API, and SPA static file host |
 | **PostGIS** | Spatial boundary storage and `ST_Contains` P-code lookup |
 | **Google Maps API** | Address → lat/lon geocoding (coordinates bypass this) |
 | **scripts/ingest.py** | One-time/incremental COD-AB data loader |
@@ -31,6 +33,7 @@ A self-hosted geocoding service backed by [OCHA COD-AB](https://cod.unocha.org/)
 
 - Docker and Docker Compose
 - Google Maps API key ([get one here](https://console.cloud.google.com/google/maps-apis))
+- Node.js 20+ (only needed for local frontend development — Docker handles it automatically)
 
 ### 1. Configure environment
 
@@ -52,9 +55,11 @@ LOGIN_PASSWORD=choose-a-strong-password
 docker compose up --build -d
 ```
 
+The `--build` step compiles the React frontend in a Node 20 stage and copies the static assets into the Python image — no separate frontend step required.
+
 This starts:
 - **db** — PostGIS 16 on port 5432 (also exposed to host for local dev)
-- **geocoder** — Flask app on port 8000
+- **geocoder** — Flask app on port 8000 (serves both the API and the compiled SPA)
 
 ### 3. Load boundary data
 
@@ -85,22 +90,34 @@ http://localhost:8000
 
 ## Local Development (without rebuilding Docker)
 
-Run Flask directly against the Dockerised DB:
+Two processes are needed: the Flask API and the Vite dev server.
 
 ```bash
-# Start just the database
+# Terminal 1 — start the database, then run Flask
 docker compose up db -d
 
-# Install dependencies (first time)
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-
-# Run the app (reads .env automatically via python-dotenv)
-python web_app.py
+python web_app.py          # listens on http://localhost:5001
 ```
 
-The app runs on http://localhost:5001.
+```bash
+# Terminal 2 — run the Vite dev server
+cd frontend
+npm install                # first time only
+npm run dev                # listens on http://localhost:5173
+```
+
+Open http://localhost:5173 in your browser. The Vite dev server proxies all `/api/*`, `/geocode*`, `/countries`, `/login`, `/logout`, and other Flask routes to `http://localhost:5001` automatically, so hot-module reloading works while talking to the real backend.
+
+### Building for production manually
+
+```bash
+cd frontend && npm run build
+```
+
+This compiles TypeScript and outputs the SPA assets to `static/`. Flask's catch-all route then serves `static/index.html` for all non-API paths.
 
 ---
 

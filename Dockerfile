@@ -1,4 +1,24 @@
 # Humanitarian Geocoder - Multi-stage Docker Build
+
+# ---------------------------------------------------------------------------
+# Stage 1: Build the React/TypeScript frontend
+# ---------------------------------------------------------------------------
+FROM node:20-alpine AS frontend-build
+
+WORKDIR /app/frontend
+
+# Install npm deps first (layer cache)
+COPY frontend/package*.json ./
+RUN npm ci
+
+# Copy source and build
+COPY frontend/ ./
+RUN npm run build
+# Outputs to /app/static (via vite.config.ts outDir: '../static')
+
+# ---------------------------------------------------------------------------
+# Stage 2: Python builder (compile wheels with GDAL)
+# ---------------------------------------------------------------------------
 FROM python:3.11-slim as builder
 
 # Install build dependencies for GDAL
@@ -45,12 +65,12 @@ WORKDIR /app
 COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
 COPY --from=builder /usr/local/bin /usr/local/bin
 
+# Copy compiled frontend assets
+COPY --from=frontend-build /app/static ./static/
+
 # Copy application files
 COPY --chown=appuser:appuser geocode.py .
 COPY --chown=appuser:appuser web_app.py .
-COPY --chown=appuser:appuser countries/ ./countries/
-COPY --chown=appuser:appuser boundaries/ ./boundaries/
-COPY --chown=appuser:appuser templates/ ./templates/
 COPY --chown=appuser:appuser logos/ ./logos/
 
 # Switch to non-root user
