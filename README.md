@@ -1,274 +1,316 @@
 # Humanitarian Geocoder
 
-A multi-country web interface for geocoding addresses and matching them to administrative boundaries. Designed to support humanitarian response efforts by providing easy country switching, robust address matching, and standardized P-code output.
+A self-hosted geocoding service backed by [OCHA COD-AB](https://cod.unocha.org/) administrative boundary data. Supports ~80 countries out of the box. Converts street addresses and GPS coordinates into standardised UN P-codes (ADM0–ADM4), with a web UI for ad-hoc lookups and batch CSV processing.
 
 ## Features
 
-- **Multi-country support**: Switch between supported countries (currently Jamaica and Mozambique).
-- **Batch Processing**: Upload CSV files with multiple addresses.
-- **Single Address Lookup**: Type or paste an address or coordinate for instant results.
-- **Administrative Boundary Matching**: Automatically assigns P-codes (e.g., ADM1, ADM2) based on location using spatial joins.
-- **Flexible Input Format**: The address column accepts both:
-  - Street addresses: "123 Main St, Kingston, Jamaica" (geocoded via Google Maps API)
-  - GPS coordinates: "18.1234, -77.5678" or "18,1234 -77,5678" (period or comma as decimal separator)
-  - Mixed files: Some rows with addresses, some with coordinates
-- **Smart Coordinate Detection**: Coordinates bypass API calls for cost savings and faster processing.
-- **Improved Accuracy**: Multi-strategy geocoding tailored for difficult addresses.
-- **Interactive Map**: Visualize results and click to identify regions.
-- **Export**: Download results as CSV or Excel.
+- **~80 countries** — powered by the OCHA global COD-AB dataset loaded into PostGIS
+- **Dynamic P-code output** — returns `adm0`–`adm4` pcode/name pairs for however many levels exist for a country
+- **Flexible input** — street addresses (via Google Maps API) and GPS coordinates in the same file
+- **Batch CSV/XLSX upload** — auth-protected; download enriched file with P-codes appended
+- **Single address lookup** and **reverse geocode** (click map or POST lat/lon)
+- **Interactive map** — country selector, map-click to geocode, boundary level filter
+- **React SPA** — frontend built with React 18, TypeScript, and [Mantine](https://mantine.dev/) v9
+- **REST API** — all endpoints return JSON
 
-## Supported Countries
+---
 
-- **Jamaica**: Parishes (ADM1) and Communities (ADM2)
-- **Mozambique**: Provinces (ADM1) and Districts (ADM2)
+## Architecture
 
-## Quick Start (Local Development)
+| Component | Role |
+|-----------|------|
+| **React + TypeScript** | SPA frontend (Vite, Mantine v9, react-leaflet) |
+| **Flask** | Web server, REST API, and SPA static file host |
+| **PostGIS** | Spatial boundary storage and `ST_Contains` P-code lookup |
+| **Google Maps API** | Address → lat/lon geocoding (coordinates bypass this) |
+| **scripts/ingest.py** | One-time/incremental COD-AB data loader |
+
+---
+
+## Quick Start
 
 ### Prerequisites
 
-- Python 3.10+
-- Google Maps API Key
+- Docker and Docker Compose
+- Google Maps API key ([get one here](https://console.cloud.google.com/google/maps-apis))
+- Node.js 20+ (only needed for local frontend development — Docker handles it automatically)
 
-### Installation
+### 1. Configure environment
 
-1.  **Clone the repository:**
-    ```bash
-    git clone <repository-url>
-    cd jamaica-geocoder
-    ```
+```bash
+cp .env.example .env
+```
 
-2.  **Install dependencies:**
-    It is recommended to use a virtual environment.
-    ```bash
-    python -m venv venv
-    source venv/bin/activate
-    pip install -r requirements.txt
-    ```
+Edit `.env` and set at minimum:
 
-3.  **Configure Environment:**
-    Create a `.env` file in the root directory:
-    ```ini
-    GOOGLE_MAPS_API_KEY=your_google_maps_api_key
-    SECRET_KEY=your_secret_key
-    LOGIN_USERNAME=admin
-    LOGIN_PASSWORD=secure_password
-    ```
+```ini
+POSTGRES_PASSWORD=choose-a-strong-password
+GOOGLE_MAPS_API_KEY=your-google-api-key
+LOGIN_PASSWORD=choose-a-strong-password
+```
 
-4.  **Run the Application:**
-    Using the helper script (macOS/Linux):
-    ```bash
-    ./scripts/run_web.sh
-    ```
-    Or directly with Python:
-    ```bash
-    python web_app.py
-    ```
+### 2. Start the stack
 
-5.  **Access:**
-    Open http://localhost:5000 in your browser.
+```bash
+docker compose up --build -d
+```
 
-## Docker Deployment
+The `--build` step compiles the React frontend in a Node 20 stage and copies the static assets into the Python image — no separate frontend step required.
 
-### Build and Run
+This starts:
+- **db** — PostGIS 16 on port 5432 (also exposed to host for local dev)
+- **geocoder** — Flask app on port 8000 (serves both the API and the compiled SPA)
 
-You can deploy the application using Docker Compose.
+### 3. Load boundary data
 
-1.  Ensure your `.env` file is created (see above).
-2.  Run:
-    ```bash
-    docker-compose up --build
-    ```
-3.  The application will be available at `http://localhost:8000` (mapped from container port 5000).
+Download and ingest the global COD-AB dataset from HDX (~940 MB):
+
+```bash
+# Auto-download from HDX and ingest everything (~80 countries)
+DATABASE_URL=postgresql://geocode:yourpassword@localhost:5432/geocode \
+  python scripts/ingest.py
+
+# Or point at an already-downloaded file
+DATABASE_URL=... python scripts/ingest.py \
+  --file data/global_admin_boundaries_matched_latest.gdb.zip
+
+# Single country only (faster for testing)
+DATABASE_URL=... python scripts/ingest.py \
+  --file data/global_admin_boundaries_matched_latest.gdb.zip \
+  --country JAM
+```
+
+> The script skips the download if the file already exists in `data/`. The `data/` directory is gitignored.
+
+### 4. Open the app
+
+http://localhost:8000
+
+---
+
+## Local Development (without rebuilding Docker)
+
+Two processes are needed: the Flask API and the Vite dev server.
+
+```bash
+# Terminal 1 — start the database, then run Flask
+docker compose up db -d
+
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+python web_app.py          # listens on http://localhost:5001
+```
+
+```bash
+# Terminal 2 — run the Vite dev server
+cd frontend
+npm install                # first time only
+npm run dev                # listens on http://localhost:5173
+```
+
+Open http://localhost:5173 in your browser. The Vite dev server proxies all `/api/*`, `/geocode*`, `/countries`, `/login`, `/logout`, and other Flask routes to `http://localhost:5001` automatically, so hot-module reloading works while talking to the real backend.
+
+### Building for production manually
+
+```bash
+cd frontend && npm run build
+```
+
+This compiles TypeScript and outputs the SPA assets to `static/`. Flask's catch-all route then serves `static/index.html` for all non-API paths.
+
+---
 
 ## Production Deployment
 
-This application is designed to be deployed on a Linux server (e.g., DigitalOcean Droplet) using Nginx and Gunicorn.
+### Docker Compose (recommended)
 
-### Architecture
-- **Nginx** as a reverse proxy (handling SSL/TLS).
-- **Gunicorn** as the application server.
-- **Systemd** for process management.
+Set all secrets in `.env`, then:
 
-### Deployment Overview
+```bash
+docker compose up -d
+```
 
-1.  **Server Setup**:
-    - Ubuntu Server (2GB RAM recommended).
-    - Install dependencies: `python3`, `pip`, `nginx`, `certbot`, `python3-certbot-nginx`.
-    - Create a dedicated user (e.g., `geocoder`).
+Put Nginx in front for SSL:
 
-2.  **Application Setup**:
-    - Clone repo to `/home/geocoder/jamaica-geocoder`.
-    - Set up virtual environment and install requirements.
-    - Configure `.env` with production keys.
+```nginx
+server {
+    server_name geocode.yourdomain.org;
 
-3.  **Service Configuration**:
-    Create a systemd service file `/etc/systemd/system/geocoder.service`:
-
-    ```ini
-    [Unit]
-    Description=Gunicorn instance to serve Geocoder
-    After=network.target
-
-    [Service]
-    User=geocoder
-    Group=www-data
-    WorkingDirectory=/home/geocoder/jamaica-geocoder
-    Environment="PATH=/home/geocoder/jamaica-geocoder/venv/bin"
-    EnvironmentFile=/home/geocoder/jamaica-geocoder/.env
-    ExecStart=/home/geocoder/jamaica-geocoder/venv/bin/gunicorn --workers 3 --bind unix:geocoder.sock -m 007 web_app:app
-
-    [Install]
-    WantedBy=multi-user.target
-    ```
-
-4.  **Nginx Configuration**:
-    Configure Nginx to proxy requests to the socket and handle SSL.
-
-    ```nginx
-    server {
-        server_name geocode.yourdomain.org;
-
-        location / {
-            include proxy_params;
-            proxy_pass http://unix:/home/geocoder/jamaica-geocoder/geocoder.sock;
-        }
+    location / {
+        proxy_pass http://localhost:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
     }
-    ```
+}
+```
 
-5.  **Enable SSL**:
-    ```bash
-    sudo certbot --nginx -d geocode.yourdomain.org
-    ```
+```bash
+sudo certbot --nginx -d geocode.yourdomain.org
+```
+
+### Without Docker (Gunicorn + systemd)
+
+```ini
+# /etc/systemd/system/geocoder.service
+[Unit]
+Description=Humanitarian Geocoder
+After=network.target postgresql.service
+
+[Service]
+User=geocoder
+WorkingDirectory=/home/geocoder/humanitarian-geocoder
+EnvironmentFile=/home/geocoder/humanitarian-geocoder/.env
+ExecStart=/home/geocoder/humanitarian-geocoder/venv/bin/gunicorn \
+    --workers 3 --bind unix:geocoder.sock -m 007 web_app:app
+
+[Install]
+WantedBy=multi-user.target
+```
+
+---
+
+## Updating Boundary Data
+
+Re-run the ingest script for a specific country to refresh its boundaries without touching others:
+
+```bash
+DATABASE_URL=... python scripts/ingest.py \
+  --file data/global_admin_boundaries_matched_latest.gdb.zip \
+  --country MOZ
+```
+
+---
 
 ## API Reference
 
-All endpoints return JSON. Endpoints marked **public** do not require authentication. Endpoints marked **auth required** require an active session (login first via the web UI or `POST /login`).
+All endpoints return JSON. Coordinates bypass the Google API — no quota consumed.
+
+### `GET /countries` — public
+
+List all ingested countries with map center and maximum admin level.
+
+```bash
+curl http://localhost:8000/countries
+```
+
+```json
+[
+  {
+    "code": "JM",
+    "iso3": "JAM",
+    "name": "Jamaica",
+    "key": "jm",
+    "max_adm_level": 2,
+    "map_center": { "lat": 18.1096, "lon": -77.2975, "zoom": 6 }
+  }
+]
+```
+
+---
+
+### `GET /api/admin_levels` — public
+
+Distinct ADM1 names for a country (used by the province filter).
+
+| Param | Description |
+|-------|-------------|
+| `country` | ISO2 code, e.g. `JM` |
+
+```bash
+curl "http://localhost:8000/api/admin_levels?country=JM"
+```
+
+```json
+{ "label": "ADM1", "values": ["Clarendon", "Hanover", "Kingston", "..."] }
+```
+
+---
 
 ### `GET /geocode` — public
 
-The simplest way to resolve P-codes. Accepts query parameters — no request body needed. Coordinates take priority over an address string; the `country` parameter is optional.
-
-**Query parameters:**
+Resolve P-codes from coordinates or an address string.
 
 | Param | Required | Description |
 |-------|----------|-------------|
 | `lat` / `latitude` | if no `address` | Decimal latitude |
 | `lon` / `longitude` | if no `address` | Decimal longitude |
-| `address` | if no `lat`/`lon` | Street address or `"lat, lon"` string |
-| `country` | no | Country key: `jamaica` or `mozambique` (default: `mozambique`) |
+| `address` | if no lat/lon | Street address or `"lat, lon"` string |
+| `country` | no | ISO2 code to scope the lookup |
 
-**Examples:**
 ```bash
-# Coordinate lookup (fastest — no geocoding API call)
-curl "https://your-domain/geocode?lat=17.9978&lon=-76.7936&country=jamaica"
+# Coordinate lookup
+curl "http://localhost:8000/geocode?lat=17.9978&lon=-76.7936&country=JM"
 
 # Address lookup
-curl "https://your-domain/geocode?address=New+Kingston,+Jamaica&country=jamaica"
+curl "http://localhost:8000/geocode?address=New+Kingston&country=JM"
 ```
 
-**Response (success):**
 ```json
 {
   "success": true,
   "latitude": 17.9978,
   "longitude": -76.7936,
-  "admin1_pcode": "JM-01",
-  "admin1_name": "Kingston",
-  "admin1_label": "Parish",
-  "admin2_pcode": "JM-0101",
-  "admin2_name": "New Kingston",
-  "admin2_label": "Community",
   "country": "Jamaica",
-  "country_code": "JM"
+  "country_code": "JM",
+  "adm0_pcode": "JM",
+  "adm0_name": "Jamaica",
+  "adm1_pcode": "JM001",
+  "adm1_name": "Kingston",
+  "adm2_pcode": "JM001001",
+  "adm2_name": "New Kingston"
 }
 ```
 
-> Address lookups also include `address` and `confidence` fields in the response.
+> Address lookups also include `address` and `confidence` fields.
 
 ---
 
 ### `POST /geocode_single` — public
 
-Geocode a single address or GPS coordinate and return P-code data.
+Geocode a single address or coordinate.
 
-**Request** (JSON or form):
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `address` | string | yes | Street address (e.g. `"123 Main St, Kingston"`) or GPS coordinates (e.g. `"18.1234, -77.5678"`) |
-| `country` | string | no | Country key: `jamaica` or `mozambique` (default: `mozambique`) |
-
-**Example:**
 ```bash
-curl -X POST https://your-domain/geocode_single \
+curl -X POST http://localhost:8000/geocode_single \
   -H "Content-Type: application/json" \
-  -d '{"address": "New Kingston, Jamaica", "country": "jamaica"}'
+  -d '{"address": "New Kingston, Jamaica", "country": "JM"}'
 ```
 
-**Response (success):**
-```json
-{
-  "success": true,
-  "address": "New Kingston, Jamaica",
-  "latitude": 17.9978,
-  "longitude": -76.7936,
-  "confidence": "high",
-  "admin1_pcode": "JM-01",
-  "admin1_name": "Kingston",
-  "admin1_label": "Parish",
-  "admin2_pcode": "JM-0101",
-  "admin2_name": "New Kingston",
-  "admin2_label": "Community",
-  "country": "Jamaica",
-  "country_code": "JM"
-}
-```
+Response shape identical to `GET /geocode`.
 
 ---
 
 ### `POST /reverse_geocode` — public
 
-Look up administrative P-codes for a known latitude/longitude.
+Look up P-codes for a known lat/lon.
 
-**Request** (JSON or form):
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `latitude` / `lat` | number | yes | Latitude in decimal degrees |
-| `longitude` / `lon` | number | yes | Longitude in decimal degrees |
-| `country` | string | no | Country key (default: `mozambique`) |
-
-**Example:**
 ```bash
-curl -X POST https://your-domain/reverse_geocode \
+curl -X POST http://localhost:8000/reverse_geocode \
   -H "Content-Type: application/json" \
-  -d '{"lat": 17.9978, "lon": -76.7936, "country": "jamaica"}'
+  -d '{"latitude": 17.9978, "longitude": -76.7936, "country": "JM"}'
 ```
-
-**Response (success):** Same shape as `/geocode_single` but without `address` and `confidence` fields.
 
 ---
 
-### `POST /geocode` — auth required
+### `POST /geocode` — **auth required**
 
-Batch geocode a CSV or Excel file. Returns the enriched file encoded as base64 JSON.
+Batch geocode a CSV or Excel file. Login via `POST /login` first (sets a session cookie).
 
 **Request** (multipart form):
 
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `file` | file | yes | CSV (semicolon-separated) or `.xlsx` file with an `address` column |
-| `country` | string | no | Country key (default: `mozambique`) |
-| `format` | string | no | Output format: `csv` (default) or `xlsx` |
-| `limit` | integer | no | Process only the first N rows |
-| `output_filename` | string | no | Base name for the downloaded file |
-| `admin1_names[]` | string (repeatable) | no | Filter spatial join to specific ADM1 names |
+| Field | Description |
+|-------|-------------|
+| `file` | CSV or `.xlsx` with an `address` column |
+| `country` | ISO2 code (optional) |
+| `format` | `csv` (default) or `xlsx` |
+| `admin1_names[]` | Repeatable; filter output to these ADM1 names |
 
 **Response:**
+
 ```json
 {
   "success": true,
-  "stats": { "total": 100, "geocoded": 95, "failed": 5 },
+  "stats": { "total": 100, "successful": 95, "failed": 5, "skipped": 0 },
   "file_data": "<base64-encoded file>",
   "filename": "geocoded_addresses.csv",
   "mimetype": "text/csv"
@@ -277,90 +319,22 @@ Batch geocode a CSV or Excel file. Returns the enriched file encoded as base64 J
 
 ---
 
-### `GET /api/admin_levels` — public
-
-Return sorted ADM1 names for a country, useful for building filter dropdowns.
-
-**Query parameters:**
-
-| Param | Description |
-|-------|-------------|
-| `country` | Country key (default: `mozambique`) |
-
-**Example:**
-```bash
-curl "https://your-domain/api/admin_levels?country=jamaica"
-```
-
-**Response:**
-```json
-{
-  "country": "Jamaica",
-  "level": "admin1",
-  "label": "Parish",
-  "values": ["Clarendon", "Hanover", "Kingston", "..."]
-}
-```
-
----
-
-### `GET /boundaries.geojson` — public
-
-Serve the administrative boundary GeoJSON for a country (WGS84). Supports `ETag` / `If-None-Match` caching and returns gzip-compressed data.
-
-**Query parameters:**
-
-| Param | Description |
-|-------|-------------|
-| `country` | Country key (default: `mozambique`) |
-
-**Example:**
-```bash
-curl "https://your-domain/boundaries.geojson?country=jamaica"
-```
-
----
-
-### `GET /countries` — public
-
-List all supported countries with their configurations.
-
-**Response:**
-```json
-[
-  {
-    "code": "JM",
-    "name": "Jamaica",
-    "key": "jamaica",
-    "map_center": [18.1096, -77.2975],
-    "admin_levels": { "level1": { "label": "Parish", ... }, "level2": { ... } }
-  }
-]
-```
-
----
-
 ### `GET /health` — public
 
-Health check. Returns server status and which country boundary datasets are currently loaded.
-
-**Response:**
 ```json
-{
-  "status": "ok",
-  "countries_loaded": ["JM"],
-  "available_countries": ["JM", "MZ"]
-}
+{ "status": "ok", "countries_loaded": 47 }
 ```
 
 ---
 
-## Development History & Improvements
+## Environment Variables
 
-- **Geocoding Success Rate**: Improved from ~20% to >90% for difficult addresses through smarter parsing and coordinate detection.
-- **Input Flexibility**: The address column now accepts both street addresses AND GPS coordinates:
-  - Coordinates are automatically detected and used directly (no API call)
-  - Addresses are geocoded via Google Maps API
-  - All results (coordinates or geocoded) receive P-code assignments via spatial join
-  - Mixed input files are fully supported
-- **Admin Boundaries**: Integrated strict spatial joining to ensure points fall within valid administrative boundaries for the selected country.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DATABASE_URL` | — | PostgreSQL connection string (required) |
+| `GOOGLE_MAPS_API_KEY` | — | Google Maps / Geocoding API key (required for address lookups) |
+| `POSTGRES_PASSWORD` | — | Password for the `geocode` DB user (used by docker-compose) |
+| `SECRET_KEY` | dev key | Flask session secret — **change in production** |
+| `LOGIN_USERNAME` | `admin` | Batch upload username |
+| `LOGIN_PASSWORD` | `admin` | Batch upload password — **change in production** |
+| `FLASK_ENV` | `production` | Set to `development` for debug mode |

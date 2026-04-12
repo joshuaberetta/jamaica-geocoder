@@ -2,8 +2,6 @@ import pytest
 import os
 import sys
 import pandas as pd
-import geopandas as gpd
-from shapely.geometry import Polygon, Point
 from unittest.mock import MagicMock, patch
 
 # Add project root to path so we can import modules
@@ -18,60 +16,18 @@ def client():
         yield client
 
 @pytest.fixture
-def mock_country_config():
+def mock_resolve_pcodes():
+    """Sample return value for geocode.resolve_pcodes."""
     return {
-        'code': 'JM',
-        'name': 'Jamaica',
-        'bounds': {
-            'lat_min': 17.0, 'lat_max': 19.0,
-            'lon_min': -79.0, 'lon_max': -76.0
-        },
-        'map_center': {'lat': 18.1, 'lon': -77.3, 'zoom': 9},
-        'google_maps_region': 'jm',
-        'google_maps_components': 'country:JM',
-        'boundary_file': 'boundaries/jamaica.geojson',
-        'admin_levels': {
-            'level1': {'pcode_field': 'ADM1_PCODE', 'name_field': 'ADM1_EN', 'label': 'Parish'},
-            'level2': {'pcode_field': 'ADM2_PCODE', 'name_field': 'ADM2_EN', 'label': 'Community'}
-        },
-        'spelling_corrections': {'kingston': 'Kingston'},
-        'fallback_parishes': ['Portland']
+        'country': 'Jamaica',
+        'country_code': 'JM',
+        'adm0_pcode': 'JM',
+        'adm0_name': 'Jamaica',
+        'adm1_pcode': 'JM01',
+        'adm1_name': 'Test Parish',
+        'adm2_pcode': 'JM0101',
+        'adm2_name': 'Test Community',
     }
-
-@pytest.fixture
-def mock_mozambique_config():
-    return {
-        'code': 'MZ',
-        'name': 'Mozambique',
-        'bounds': {
-            'lat_min': -27.0, 'lat_max': -10.0,
-            'lon_min': 30.0, 'lon_max': 41.0
-        },
-        'map_center': {'lat': -18.5, 'lon': 35.5, 'zoom': 6},
-        'google_maps_region': 'mz',
-        'google_maps_components': 'country:MZ',
-        'boundary_file': 'boundaries/mozambique.geojson',
-        'admin_levels': {
-            'level1': {'pcode_field': 'ADM1_PCODE', 'name_field': 'ADM1_EN', 'label': 'Province'},
-            'level2': {'pcode_field': 'ADM2_PCODE', 'name_field': 'ADM2_EN', 'label': 'District'}
-        },
-        'spelling_corrections': {},
-        'fallback_parishes': []
-    }
-
-@pytest.fixture
-def sample_boundaries():
-    # Create a simple square polygon for testing
-    poly = Polygon([(-77.0, 18.0), (-76.0, 18.0), (-76.0, 19.0), (-77.0, 19.0), (-77.0, 18.0)])
-    
-    data = {
-        'ADM1_EN': ['Test Parish'],
-        'ADM1_PCODE': ['JM01'],
-        'ADM2_EN': ['Test Community'],
-        'ADM2_PCODE': ['JM0101'],
-        'geometry': [poly]
-    }
-    return gpd.GeoDataFrame(data, crs="EPSG:4326")
 
 @pytest.fixture
 def sample_dataframe():

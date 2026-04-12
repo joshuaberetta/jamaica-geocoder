@@ -12,54 +12,49 @@ def test_index_route(client):
     assert b"Humanitarian Geocoder" in response.data
 
 def test_countries_route(client):
-    response = client.get('/countries')
+    with patch('web_app.get_db_conn') as mock_db:
+        mock_cur = MagicMock()
+        mock_cur.__enter__.return_value = mock_cur
+        mock_cur.fetchall.return_value = [
+            {'iso2': 'JM', 'iso3': 'JAM', 'country_name': 'Jamaica',
+             'max_adm_level': 2, 'center_lon': -77.3, 'center_lat': 18.1}
+        ]
+        mock_conn = MagicMock()
+        mock_conn.__enter__.return_value = mock_conn
+        mock_conn.cursor.return_value = mock_cur
+        mock_db.return_value = mock_conn
+
+        response = client.get('/countries')
+
     assert response.status_code == 200
     data = json.loads(response.data)
     assert isinstance(data, list)
     assert len(data) > 0
     assert 'code' in data[0]
+    assert data[0]['code'] == 'JM'
 
-@patch('web_app.load_boundaries')
+@patch('web_app.resolve_pcodes')
 @patch('web_app.geocode_address')
-@patch('web_app.spatial_join_boundaries')
-def test_geocode_single_endpoint(mock_spatial_join, mock_geocode, mock_load, client, mock_country_config, sample_boundaries):
-    # Setup mocks
-    mock_load.return_value = sample_boundaries
+def test_geocode_single_endpoint(mock_geocode, mock_resolve, client, mock_resolve_pcodes):
     mock_geocode.return_value = (18.123, -76.567, "ROOFTOP")
-    
-    # Mock result of spatial join
-    # It takes point_gdf and boundaries, returns point_gdf with boundary info
-    def side_effect_spatial(point_gdf, boundaries):
-        # Determine cols to add
-        cols = ['ADM1_EN', 'ADM1_PCODE', 'ADM2_EN', 'ADM2_PCODE']
-        for col in cols:
-            point_gdf[col] = sample_boundaries.iloc[0][col]
-        return point_gdf
-        
-    mock_spatial_join.side_effect = side_effect_spatial
-    
-    # Make request
+    mock_resolve.return_value = mock_resolve_pcodes
+
     response = client.post('/geocode_single', json={
         'address': 'Test Address',
-        'country': 'jamaica'
+        'country': 'JM'
     })
-    
+
     assert response.status_code == 200
     data = json.loads(response.data)
-    
+
     assert data['success'] is True
     assert data['latitude'] == 18.123
-    assert data['admin1_name'] == 'Test Parish'
+    assert data['adm1_name'] == 'Test Parish'
     assert data['country_code'] == 'JM'
 
-@patch('web_app.load_boundaries')
+@patch('web_app.resolve_pcodes')
 @patch('web_app.geocode_dataframe')
-@patch('web_app.spatial_join_boundaries')
-def test_bulk_geocode_endpoint(mock_spatial_join, mock_geocode_df, mock_load, client, sample_boundaries):
-    # Setup mocks
-    mock_load.return_value = sample_boundaries
-    
-    # Mock geocode_dataframe return (gdf, stats)
+def test_bulk_geocode_endpoint(mock_geocode_df, mock_resolve, client, mock_resolve_pcodes):
     result_gdf = gpd.GeoDataFrame({
         'address': ['Test 1'],
         'latitude': [18.123],
@@ -69,26 +64,19 @@ def test_bulk_geocode_endpoint(mock_spatial_join, mock_geocode_df, mock_load, cl
     }, crs="EPSG:4326")
     stats = {'total': 1, 'successful': 1, 'failed': 0, 'skipped': 0}
     mock_geocode_df.return_value = (result_gdf, stats)
-    
-    # Mock spatial join
-    def side_effect_spatial(points, boundaries):
-        points['ADM1_EN'] = 'Test Parish'
-        return points
-    mock_spatial_join.side_effect = side_effect_spatial
+    mock_resolve.return_value = mock_resolve_pcodes
 
-    # Prepare file upload
     csv_str = pd.DataFrame({'address': ['Test 1']}).to_csv(index=False)
     data = {
         'file': (io.BytesIO(csv_str.encode('utf-8')), 'test.csv'),
-        'country': 'jamaica'
+        'country': 'JM'
     }
-    
-    # Login session
+
     with client.session_transaction() as sess:
         sess['logged_in'] = True
 
     response = client.post('/geocode', data=data, content_type='multipart/form-data')
-    
+
     assert response.status_code == 200
     json_response = json.loads(response.data)
     assert json_response['success'] is True

@@ -8,4 +8,8 @@ flask
 flask-cors
 flask-compress
 gunicorn
+psycopg2-binary
+sqlalchemy
+fiona
+hdx-python-api
 pytest
