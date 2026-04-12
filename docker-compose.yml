@@ -1,4 +1,23 @@
 services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_DB: geocode
+      POSTGRES_USER: geocode
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U geocode"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - geocoder-network
+
   geocoder:
     build:
       context: .
@@ -7,13 +26,14 @@ services:
       - "8000:5000"
     environment:
       - GOOGLE_MAPS_API_KEY=${GOOGLE_MAPS_API_KEY}
+      - DATABASE_URL=postgresql://geocode:${POSTGRES_PASSWORD}@db:5432/geocode
       - SECRET_KEY=${SECRET_KEY:-humanitarian-geocoder-secret-key-change-in-production}
       - LOGIN_USERNAME=${LOGIN_USERNAME:-admin}
       - LOGIN_PASSWORD=${LOGIN_PASSWORD:-change-this-password}
       - FLASK_ENV=${FLASK_ENV:-production}
-    volumes:
-      # Mount boundaries for easy updates without rebuild
-      - ./boundaries:/app/boundaries:ro
+    depends_on:
+      db:
+        condition: service_healthy
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health').read()"]
@@ -23,6 +43,9 @@ services:
       start_period: 40s
     networks:
       - geocoder-network
+
+volumes:
+  pgdata:
 
 networks:
   geocoder-network:

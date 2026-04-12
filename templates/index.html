@@ -6,8 +6,7 @@
     <title>Humanitarian Geocoder</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/localforage/1.10.0/localforage.min.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/lz-string/1.5.0/lz-string.min.js"></script>
+
     <style>
         * {
             margin: 0;
@@ -550,6 +549,29 @@
             margin-top: 12px;
         }
 
+        .boundary-controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-top: 12px;
+            font-size: 13px;
+            color: #586069;
+        }
+
+        .boundary-controls label {
+            font-weight: 600;
+            white-space: nowrap;
+        }
+
+        .boundary-controls select {
+            padding: 3px 6px;
+            border: 1px solid #d1d5da;
+            border-radius: 3px;
+            font-size: 13px;
+            background: #fff;
+            cursor: pointer;
+        }
+
         .map-loader {
             position: absolute;
             top: 0;
@@ -804,29 +826,8 @@
         <div style="margin-bottom: 24px; padding: 16px; background: #f8f9fa; border-radius: 4px; border: 1px solid #e1e4e8;">
             <label for="countrySelect" style="display: block; font-weight: 600; color: #2c3e50; margin-bottom: 8px;">Select Country:</label>
             <select id="countrySelect" style="width: 100%; padding: 11px 12px; border: 1px solid #d1d5da; border-radius: 3px; font-size: 14px; background: white; cursor: pointer;">
-                {% for country in countries %}
-                <option value="{{ country.key }}" data-code="{{ country.code }}">{{ country.name }}</option>
-                {% endfor %}
+                <!-- Populated from /countries API on page load -->
             </select>
-        </div>
-        
-        <!-- Province Filter (Admin1 Level) -->
-        <div id="provinceFilterContainer" style="margin-bottom: 24px; padding: 16px; background: #f8f9fa; border-radius: 4px; border: 1px solid #e1e4e8; display: none;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
-                <label for="provinceSelect" style="font-weight: 600; color: #2c3e50; margin: 0;">
-                    Filter by <span id="provinceLevelLabel">Province</span>:
-                </label>
-                <div style="display: flex; gap: 8px;">
-                    <button type="button" id="selectAllProvinces" style="padding: 4px 8px; font-size: 12px; background: #0366d6; color: white; border: none; border-radius: 3px; cursor: pointer;">Select All</button>
-                    <button type="button" id="deselectAllProvinces" style="padding: 4px 8px; font-size: 12px; background: #6c757d; color: white; border: none; border-radius: 3px; cursor: pointer;">Deselect All</button>
-                </div>
-            </div>
-            <select id="provinceSelect" multiple style="width: 100%; min-height: 120px; padding: 8px; border: 1px solid #d1d5da; border-radius: 3px; font-size: 14px; background: white;">
-                <!-- Options populated dynamically -->
-            </select>
-            <div style="margin-top: 8px; font-size: 12px; color: #586069;">
-                <span id="provinceFilterStatus">All provinces selected (no filtering)</span>
-            </div>
         </div>
         
         <!-- Single Address Input Section -->
@@ -848,11 +849,12 @@
             <h2>Select Point from Map</h2>
             <p class="map-instructions">Click anywhere on the map to get P-code information for that location</p>
             
+            <div class="boundary-controls">
+                <label for="boundaryLevelSelect">Boundary level:</label>
+                <select id="boundaryLevelSelect"></select>
+            </div>
+
             <div class="map-container">
-                <div id="loading-spinner" class="map-loader" style="display: none;">
-                    <div class="spinner"></div>
-                    <div class="loading-text">Loading boundary data...</div>
-                </div>
                 <div id="map"></div>
             </div>
             
@@ -959,97 +961,86 @@
             Built by <a href="https://www.kobo.ngo/" target="_blank">Kobo</a>
             <span style="margin: 0 8px; color: #cbd5e1;">|</span>
             <a href="https://github.com/joshuaberetta/jamaica-geocoder/issues/new/choose" target="_blank">Report an issue</a>
-            <span style="margin: 0 8px; color: #cbd5e1;">|</span>
-            <a href="#" id="clearCacheBtn" title="Clear locally cached boundary data">Clear Data</a>
         </div>
     </div>
     
     <script>
-        // Country configurations - fetched from backend
-        let countryConfigs = {};
-        
-        // Get country from URL parameter or default to mozambique
         const urlParams = new URLSearchParams(window.location.search);
-        let currentCountry = urlParams.get('country') || 'mozambique';
+        let currentCountry = (urlParams.get('country') || '').toUpperCase() || null;
         let map;
         
-        // Initialize map (will be centered dynamically)
+        // Initialize map
         function initializeMap() {
-            // Check if map container exists
-            const mapContainer = document.getElementById('map');
-            if (!mapContainer) {
-                console.error('Map container not found!');
-                return;
+            if (map !== undefined && map !== null) {
+                map.remove();
             }
-            
-            // Check if map is already initialized
-            if (map !== undefined && map !== null) { 
-                map.remove(); 
-            }
-            
-            map = L.map('map').setView([-18.665695, 35.529562], 6);
-            
-            // Add OpenStreetMap tiles
+            map = L.map('map').setView([0, 20], 2);
             L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-                attribution: '© OpenStreetMap contributors',
+                attribution: '&copy; OpenStreetMap contributors',
                 maxZoom: 19
             }).addTo(map);
-            
-            // Re-bind click handler
             map.on('click', handleMapClick);
         }
         
-        // Extracted click handler
+        // ---------------------------------------------------------------------------
+        // P-code result renderer (dynamic adm0-adm4 fields)
+        // ---------------------------------------------------------------------------
+
+        function renderPcodeFields(result) {
+            let html = '';
+            if (result.country) {
+                html += `<div class="result-row"><span class="result-label">Country:</span> ${result.country}</div>`;
+            }
+            for (let n = 0; n <= 4; n++) {
+                const pcode = result[`adm${n}_pcode`];
+                const name  = result[`adm${n}_name`];
+                if (pcode || name) {
+                    if (pcode) html += `<div class="result-row"><span class="result-label">ADM${n} P-Code:</span> ${pcode}</div>`;
+                    if (name)  html += `<div class="result-row"><span class="result-label">ADM${n} Name:</span> ${name}</div>`;
+                }
+            }
+            return html || '<div class="result-row">No P-code data found</div>';
+        }
+
+        function popupText(result) {
+            const name = result.adm2_name || result.adm1_name || result.adm0_name || 'Unknown';
+            const pcode = result.adm2_pcode || result.adm1_pcode || result.adm0_pcode || 'N/A';
+            return `<strong>${name}</strong><br><small>P-Code: ${pcode}</small>`;
+        }
+
+        // ---------------------------------------------------------------------------
+        // Map click handler
+        // ---------------------------------------------------------------------------
+
         async function handleMapClick(e) {
             const lat = e.latlng.lat;
             const lon = e.latlng.lng;
-            
-            // Remove previous marker if exists
+
             if (currentMarker) {
                 map.removeLayer(currentMarker);
             }
-            
-            // Add new marker
             currentMarker = L.marker([lat, lon]).addTo(map);
-            
-            // Show loading state
             showMapResult('Loading P-code information...', null);
-            
+
             try {
+                const body = { latitude: lat, longitude: lon };
+                if (currentCountry) body.country = currentCountry;
+
                 const response = await fetch('/reverse_geocode', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ 
-                        latitude: lat, 
-                        longitude: lon,
-                        country: currentCountry
-                    })
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
                 });
-                
                 const result = await response.json();
-                
+
                 if (result.success) {
-                    // Use labels from API response (already includes country-specific labels)
-                    const admin1Label = result.admin1_label || 'Admin Level 1';
-                    const admin2Label = result.admin2_label || 'Admin Level 2';
-                    
-                    showMapResult(`
-                        <div class="result-row"><span class="result-label">Latitude:</span> ${result.latitude.toFixed(6)}</div>
-                        <div class="result-row"><span class="result-label">Longitude:</span> ${result.longitude.toFixed(6)}</div>
-                        <div class="result-row"><span class="result-label">${admin1Label} (P-Code):</span> ${result.admin1_pcode || 'N/A'}</div>
-                        <div class="result-row"><span class="result-label">${admin1Label} Name:</span> ${result.admin1_name || 'N/A'}</div>
-                        <div class="result-row"><span class="result-label">${admin2Label} (P-Code):</span> ${result.admin2_pcode || 'N/A'}</div>
-                        <div class="result-row"><span class="result-label">${admin2Label} Name:</span> ${result.admin2_name || 'N/A'}</div>
-                    `, true);
-                    
-                    // Update marker popup
-                    currentMarker.bindPopup(`
-                        <strong>${result.admin1_name || `Unknown ${admin1Label}`}</strong><br>
-                        ${result.admin2_name || `Unknown ${admin2Label}`}<br>
-                        <small>P-Code: ${result.admin2_pcode || 'N/A'}</small>
-                    `).openPopup();
+                    showMapResult(
+                        `<div class="result-row"><span class="result-label">Latitude:</span> ${result.latitude.toFixed(6)}</div>` +
+                        `<div class="result-row"><span class="result-label">Longitude:</span> ${result.longitude.toFixed(6)}</div>` +
+                        renderPcodeFields(result),
+                        true
+                    );
+                    currentMarker.bindPopup(popupText(result)).openPopup();
                 } else {
                     showMapResult(result.error || 'Could not find P-code information for this location', false);
                 }
@@ -1057,553 +1048,224 @@
                 showMapResult('Error: ' + error.message, false);
             }
         }
-        
-        // Fetch country configurations on page load
-        async function loadCountryConfigs() {
+
+        // ---------------------------------------------------------------------------
+        // Country list (DB-driven dropdown)
+        // ---------------------------------------------------------------------------
+
+        async function loadCountries() {
             try {
                 const response = await fetch('/countries');
                 const countries = await response.json();
-                countries.forEach(country => {
-                    countryConfigs[country.key] = country;
-                });
-                // Center map on initial country
-                centerMapOnCountry(currentCountry);
-            } catch (error) {
-                console.error('Failed to load country configs:', error);
-            }
-        }
-        
-        // Center map on selected country
-        function centerMapOnCountry(countryKey) {
-            const config = countryConfigs[countryKey];
-            if (config && config.map_center) {
-                map.setView([config.map_center.lat, config.map_center.lon], config.map_center.zoom);
-            }
-        }
-        
-        // Cache keys - will be country-specific
-        function getBoundaryCacheKey(country) {
-            return `${country}_boundaries_v5`; // Increment version for new storage format
-        }
-        function getBoundaryEtagKey(country) {
-            return `${country}_boundaries_etag_v5`;
-        }
-        
-        // Track if boundaries are already on map
-        let boundariesLoaded = false;
-        
-        // Configure localForage
-        localforage.config({
-            name: 'HumanitarianGeocoder',
-            storeName: 'boundary_cache', // Should be alphanumeric, with underscores.
-            description: 'Storage for large boundary GeoJSON files'
-        });
+                const select = document.getElementById('countrySelect');
 
-        // Async storage helper with LZ-String compression
-        async function saveToStorage(key, data) {
-            try {
-                // Compress string data before storing
-                const compressed = LZString.compressToUTF16(data);
-                await localforage.setItem(key, compressed);
-                return true;
-            } catch (e) {
-                console.warn('IndexedDB/localForage write failed:', e);
-                return false;
+                countries.forEach(country => {
+                    const option = document.createElement('option');
+                    option.value = country.code;
+                    option.textContent = country.name;
+                    option.dataset.mapCenter = JSON.stringify(country.map_center);
+                    select.appendChild(option);
+                });
+
+                // Match URL param or use first option
+                if (currentCountry) {
+                    const opts = Array.from(select.options);
+                    const match = opts.find(o => o.value.toUpperCase() === currentCountry.toUpperCase());
+                    if (match) {
+                        select.value = match.value;
+                        currentCountry = match.value;
+                    } else {
+                        currentCountry = select.options[0] ? select.options[0].value : null;
+                    }
+                } else if (select.options.length > 0) {
+                    currentCountry = select.options[0].value;
+                }
+
+                centerMapOnSelectedCountry();
+                if (currentCountry) {
+                    const _loadFn = () => loadAvailableLevels(currentCountry);
+                    'requestIdleCallback' in window ? requestIdleCallback(_loadFn) : setTimeout(_loadFn, 150);
+                }
+            } catch (error) {
+                console.error('Failed to load countries:', error);
             }
         }
-        
-        async function getFromStorage(key) {
+
+        function centerMapOnSelectedCountry() {
+            const select = document.getElementById('countrySelect');
+            if (!select || !select.selectedIndex < 0) return;
+            const opt = select.options[select.selectedIndex];
+            if (!opt) return;
             try {
-                const compressed = await localforage.getItem(key);
-                if (!compressed) return null;
-                // Decompress
-                return LZString.decompressFromUTF16(compressed);
-            } catch (e) {
-                console.warn('IndexedDB/localForage read failed:', e);
-                return null;
-            }
+                const mc = JSON.parse(opt.dataset.mapCenter || '{}');
+                if (mc.lat && mc.lon) {
+                    map.setView([mc.lat, mc.lon], mc.zoom || 6);
+                }
+            } catch (e) { /* ignore */ }
         }
-        
-        async function removeFromStorage(key) {
-            try {
-                await localforage.removeItem(key);
-            } catch (e) {
-                console.warn('IndexedDB/localForage remove failed:', e);
-            }
-        }
-        
-        // Store current boundary layer for removal on country change
+
+        // ---------------------------------------------------------------------------
+        // Boundary layer overlay
+        // ---------------------------------------------------------------------------
+
         let currentBoundaryLayer = null;
-        
-        // Function to add boundaries to map
-        function addBoundariesToMap(data) {
-            // Remove existing boundary layer if present
+        let currentBoundaryLevel = 2;
+
+        async function loadAvailableLevels(iso2) {
+            if (!iso2) return;
+            const select = document.getElementById('boundaryLevelSelect');
+            try {
+                const res = await fetch(`/api/available_levels?country=${iso2}`);
+                const data = await res.json();
+                const levels = (data.levels || []).filter(l => l > 0); // skip ADM0-only
+                if (!levels.length) { select.innerHTML = ''; return; }
+
+                select.innerHTML = levels.map(l =>
+                    `<option value="${l}"${l === currentBoundaryLevel ? ' selected' : ''}>ADM${l}</option>`
+                ).join('');
+
+                // Default: prefer level 2, else highest available
+                const preferred = levels.includes(2) ? 2 : levels[levels.length - 1];
+                if (!levels.includes(currentBoundaryLevel)) {
+                    currentBoundaryLevel = preferred;
+                    select.value = currentBoundaryLevel;
+                }
+            } catch (e) {
+                console.warn('Could not load admin levels:', e);
+            }
+            await loadBoundaryLayer(iso2, currentBoundaryLevel);
+        }
+
+        async function loadBoundaryLayer(iso2, level) {
+            if (level === undefined) level = currentBoundaryLevel;
+            currentBoundaryLevel = level;
             if (currentBoundaryLayer) {
                 map.removeLayer(currentBoundaryLayer);
                 currentBoundaryLayer = null;
             }
-            
-            console.log('Adding boundaries to map, features:', data.features?.length);
-            
-            // Get current country config for field mapping
-            const config = countryConfigs[currentCountry];
-            
-            currentBoundaryLayer = L.geoJSON(data, {
-                style: {
-                    color: '#4A90E2',
-                    weight: 2,
-                    opacity: 0.6,
-                    fillOpacity: 0.1
-                },
-                onEachFeature: function(feature, layer) {
-                    if (feature.properties) {
-                        const props = feature.properties;
-                        
-                        // Get field names from config or default to Jamaica (legacy support)
-                        const level1NameField = config?.admin_levels?.level1?.name_field || 'ADM1_EN';
-                        const level2NameField = config?.admin_levels?.level2?.name_field || 'ADM2_EN';
-                        const level2PcodeField = config?.admin_levels?.level2?.pcode_field || 'ADM2_PCODE';
-                        const level1Label = config?.admin_levels?.level1?.label || 'Parish';
-                        
-                        const level1Name = props[level1NameField] || `Unknown ${level1Label}`;
-                        const level2Name = props[level2NameField] || 'Unknown';
-                        const pcode = props[level2PcodeField] || 'N/A';
-                        
-                        layer.bindTooltip(
-                            `<strong>${level2Name}</strong><br>` +
-                            `${level1Name}<br>` +
-                            `<small>P-Code: ${pcode}</small>`,
-                            { sticky: true }
-                        );
-                    }
-                }
-            }).addTo(map);
-            boundariesLoaded = true;
-            console.log('✓ Boundaries added to map successfully');
-        }
-        
-        // Load and display community boundaries with caching
-        async function loadBoundaries(country = 'mozambique') {
-            console.log(`Loading boundaries for ${country}...`);
-            
-            const spinner = document.getElementById('loading-spinner');
-            if (spinner) spinner.style.display = 'flex';
-
-            const cacheKey = getBoundaryCacheKey(country);
-            const etagKey = getBoundaryEtagKey(country);
-            
-            // Try to load from cache first (async from IndexedDB)
-            let cachedData = await getFromStorage(cacheKey);
-            const cachedETag = localStorage.getItem(etagKey);
-            
-            let cacheDisplayed = false;
-            
+            if (!iso2) return;
             try {
-                if (cachedData) {
-                    console.log('Found cached boundaries (decompressed), displaying...');
-                    try {
-                        const data = JSON.parse(cachedData);
-                        addBoundariesToMap(data);
-                        cacheDisplayed = true;
-                    } catch (error) {
-                        console.error('Error parsing cached boundaries:', error);
-                        await removeFromStorage(cacheKey);
-                        localStorage.removeItem(etagKey);
-                        cachedData = null;
-                    }
-                }
-                
-                // Fetch from server
-                const headers = {};
-                if (cachedETag) {
-                    headers['If-None-Match'] = cachedETag;
-                }
-                
-                const response = await fetch(`/boundaries.geojson?country=${country}`, { headers });
-                console.log('Server response:', response.status);
-                
-                if (response.status === 304) {
-                    console.log('✓ Boundaries up to date (304)');
-                    // If we didn't display cache earlier (shouldn't happen), we have a problem
-                    if (!cacheDisplayed) {
-                        console.warn('Got 304 but no cache was available, clearing cache and retrying...');
-                        await removeFromStorage(cacheKey);
-                        localStorage.removeItem(etagKey);
-                        // Retry without ETag
-                        return loadBoundaries(country);
-                    }
-                    return;
-                }
-                
-                if (!response.ok) {
-                    throw new Error(`HTTP error! status: ${response.status}`);
-                }
-                
-                const text = await response.text();
-                const data = JSON.parse(text);
-                
-                // Store ETag and data
-                const etag = response.headers.get('ETag');
-                if (etag) {
-                    localStorage.setItem(etagKey, etag);
-                }
-                
-                // Cache in IndexedDB with compression
-                if (await saveToStorage(cacheKey, text)) {
-                    console.log('✓ Boundaries compressed and cached');
-                }
-                
-                // Add to map if not already loaded from cache
-                addBoundariesToMap(data);
-                
-            } catch (error) {
-                console.error('Error loading boundaries:', error);
-                // If we have cache and server fails, at least we have the map
-                if (!cacheDisplayed && cachedData) {
-                    console.log('Server failed but using cached data as fallback');
-                    try {
-                        const data = JSON.parse(cachedData);
-                        addBoundariesToMap(data);
-                    } catch (e) {
-                        console.error('Cache fallback also failed:', e);
-                    }
-                }
-            } finally {
-                if (spinner) spinner.style.display = 'none';
-            }
-        }
-        
-        // Initialize everything when DOM is ready
-        document.addEventListener('DOMContentLoaded', function() {
-            console.log('DOM loaded, initializing app...');
-            console.log('URL Search Params:', window.location.search);
-            
-            // Get province filter elements
-            const provinceFilterContainer = document.getElementById('provinceFilterContainer');
-            const provinceSelect = document.getElementById('provinceSelect');
-            const provinceLevelLabel = document.getElementById('provinceLevelLabel');
-            const provinceFilterStatus = document.getElementById('provinceFilterStatus');
-            const selectAllProvincesBtn = document.getElementById('selectAllProvinces');
-            const deselectAllProvincesBtn = document.getElementById('deselectAllProvinces');
-            
-            // Function to load and populate provinces for current country
-            async function loadProvinces(country) {
-                try {
-                    const response = await fetch(`/api/admin_levels?country=${country}`);
-                    if (!response.ok) {
-                        throw new Error('Failed to load admin levels');
-                    }
-                    
-                    const data = await response.json();
-                    
-                    // Update label
-                    provinceLevelLabel.textContent = data.label || 'Province';
-                    
-                    // Clear existing options
-                    provinceSelect.innerHTML = '';
-                    
-                    // Add all provinces as options
-                    data.values.forEach(province => {
-                        const option = document.createElement('option');
-                        option.value = province;
-                        option.textContent = province;
-                        option.selected = true; // Select all by default
-                        provinceSelect.appendChild(option);
-                    });
-                    
-                    // Show the filter container
-                    provinceFilterContainer.style.display = 'block';
-                    
-                    // Update status
-                    updateProvinceFilterStatus();
-                    
-                } catch (error) {
-                    console.error('Error loading provinces:', error);
-                    // Hide filter on error
-                    provinceFilterContainer.style.display = 'none';
-                }
-            }
-            
-            // Function to update filter status text
-            function updateProvinceFilterStatus() {
-                const selected = Array.from(provinceSelect.selectedOptions);
-                const total = provinceSelect.options.length;
-                
-                if (selected.length === 0) {
-                    provinceFilterStatus.textContent = 'No provinces selected (results will be empty)';
-                    provinceFilterStatus.style.color = '#d73a49';
-                } else if (selected.length === total) {
-                    provinceFilterStatus.textContent = 'All provinces selected (no filtering)';
-                    provinceFilterStatus.style.color = '#586069';
-                } else {
-                    provinceFilterStatus.textContent = `${selected.length} of ${total} provinces selected: ${selected.map(o => o.value).join(', ')}`;
-                    provinceFilterStatus.style.color = '#0366d6';
-                }
-            }
-            
-            // Select/Deselect all buttons
-            selectAllProvincesBtn.addEventListener('click', () => {
-                Array.from(provinceSelect.options).forEach(option => option.selected = true);
-                updateProvinceFilterStatus();
-            });
-            
-            deselectAllProvincesBtn.addEventListener('click', () => {
-                Array.from(provinceSelect.options).forEach(option => option.selected = false);
-                updateProvinceFilterStatus();
-            });
-            
-            // Update status when selection changes
-            provinceSelect.addEventListener('change', updateProvinceFilterStatus);
-            
-            // Handle Cache Clearing
-            const clearCacheBtn = document.getElementById('clearCacheBtn');
-            if (clearCacheBtn) {
-                clearCacheBtn.addEventListener('click', async (e) => {
-                    e.preventDefault();
-                    if (confirm('This will clear all cached boundary data and reload the page. Continue?')) {
-                        try {
-                            await localforage.clear(); // Clear all IndexedDB data
-                            sessionStorage.clear(); // Clear legacy session storage
-                            // Also clear ETags from localStorage
-                            Object.keys(localStorage).forEach(key => {
-                                if (key.includes('_boundaries_etag_')) {
-                                    localStorage.removeItem(key);
-                                }
-                            });
-                            alert('Cache cleared successfully.');
-                        } catch (err) {
-                            console.error('Error clearing cache:', err);
+                const response = await fetch(`/boundaries.geojson?country=${iso2}&level=${level}`);
+                if (!response.ok) return;
+                const geojson = await response.json();
+                currentBoundaryLayer = L.geoJSON(geojson, {
+                    bubblingMouseEvents: false,
+                    style: {
+                        color: '#3a7fc1',
+                        weight: 1,
+                        fillOpacity: 0.05,
+                        fillColor: '#3a7fc1',
+                    },
+                    onEachFeature(feature, lyr) {
+                        const p = feature.properties;
+                        const name  = p.name  || '';
+                        const pcode = p.pcode || '';
+                        // Build popup breadcrumb: all parents + current
+                        let popupLines = [];
+                        for (let n = 0; n < level; n++) {
+                            if (p[`adm${n}_name`]) popupLines.push(p[`adm${n}_name`]);
                         }
-                        window.location.reload();
+                        if (name) popupLines.push(`<strong>${name}</strong>`);
+                        lyr.bindPopup(
+                            popupLines.join('<br>') + `<br><small>P-Code: ${pcode}</small>`
+                        );
+                        lyr.on('click', (e) => {
+                            if (currentMarker) map.removeLayer(currentMarker);
+                            currentMarker = L.marker([e.latlng.lat, e.latlng.lng]).addTo(map);
+                            let html =
+                                `<div class="result-row"><span class="result-label">Latitude:</span> ${e.latlng.lat.toFixed(6)}</div>` +
+                                `<div class="result-row"><span class="result-label">Longitude:</span> ${e.latlng.lng.toFixed(6)}</div>`;
+                            for (let n = 0; n < level; n++) {
+                                if (p[`adm${n}_pcode`]) html += `<div class="result-row"><span class="result-label">ADM${n} P-Code:</span> ${p[`adm${n}_pcode`]}</div>`;
+                                if (p[`adm${n}_name`])  html += `<div class="result-row"><span class="result-label">ADM${n} Name:</span> ${p[`adm${n}_name`]}</div>`;
+                            }
+                            if (pcode) html += `<div class="result-row"><span class="result-label">ADM${level} P-Code:</span> ${pcode}</div>`;
+                            if (name)  html += `<div class="result-row"><span class="result-label">ADM${level} Name:</span> ${name}</div>`;
+                            showMapResult(html, true);
+                        });
                     }
-                });
-            }
-
-            // Get country selector
-            const countrySelect = document.getElementById('countrySelect');
-            if (!countrySelect) {
-                console.error('Country selector not found');
-                return;
-            }
-            
-            // Log available options for debugging
-            const availableCountries = Array.from(countrySelect.options).map(opt => opt.value);
-            console.log('Available countries in dropdown:', availableCountries);
-            console.log('Requested country from URL:', currentCountry);
-            
-            // Robust check for current country
-            if (!availableCountries.includes(currentCountry)) {
-                console.warn(`Requested country '${currentCountry}' not exactly found in options.`);
-                
-                // Try case-insensitive matching against values
-                let match = availableCountries.find(c => c.toLowerCase() === currentCountry.toLowerCase());
-                
-                // If not found, try matching against data-code
-                if (!match) {
-                    const optionMatch = Array.from(countrySelect.options).find(opt => 
-                        opt.getAttribute('data-code') && 
-                        opt.getAttribute('data-code').toLowerCase() === currentCountry.toLowerCase()
-                    );
-                    if (optionMatch) {
-                        match = optionMatch.value;
-                    }
-                }
-                
-                if (match) {
-                    console.log(`Found match: ${match}`);
-                    currentCountry = match;
-                } else {
-                    console.warn(`No match found. Defaulting to ${availableCountries[0]}`);
-                    currentCountry = availableCountries[0];
-                }
-            }
-            
-            // Set dropdown value
-            countrySelect.value = currentCountry;
-            console.log('Final currentCountry for initialization:', currentCountry);
-            
-            // Initialize the map
-            try {
-                initializeMap();
-                console.log('Map initialized successfully');
+                }).addTo(map);
             } catch (e) {
-                console.error('Map initialization failed:', e);
+                console.warn('Could not load boundary layer:', e);
             }
-            
-            // Load country configs and boundaries
-            loadCountryConfigs().then(() => {
-                console.log('Country configs loaded:', Object.keys(countryConfigs));
-                
-                // If we have a map center for the current country, update the map now
-                // This fixes the issue where map initializes to Jamaica hardcoded coords
-                centerMapOnCountry(currentCountry);
-                
-                // Now load boundaries
-                loadBoundaries(currentCountry);
-                
-                // Load provinces for the current country
-                loadProvinces(currentCountry);
+        }
 
-                // Check for address parameter in URL and trigger lookup
-                const addressParam = urlParams.get('address');
-                if (addressParam) {
-                    // We need to access elements that are defined later in the file, 
-                    // or just get them by ID to be safe
-                    const addrInput = document.getElementById('singleAddress');
-                    const btn = document.getElementById('geocodeSingleBtn');
-                    
-                    if (addrInput && btn) {
-                        addrInput.value = addressParam;
-                        console.log('Auto-geocoding address from URL:', addressParam);
-                        // Trigger click to start geocoding
-                        setTimeout(() => btn.click(), 500);
-                    }
-                }
-            }).catch(err => {
-                console.error('Failed to load country configs:', err);
-                // Try to load boundaries anyway as fallback
-                loadBoundaries(currentCountry);
-            });
-            
-            // Country selector change handler
-            countrySelect.addEventListener('change', function(e) {
-                currentCountry = e.target.value;
-                console.log('Country changed to:', currentCountry);
-                
-                // Update URL without reload
-                try {
-                    const url = new URL(window.location);
-                    url.searchParams.set('country', currentCountry);
-                    window.history.pushState({}, '', url);
-                } catch (e) {
-                    console.error('Failed to update URL:', e);
-                }
-                
-                centerMapOnCountry(currentCountry);
-                loadBoundaries(currentCountry);
-                
-                // Reload provinces for new country
-                loadProvinces(currentCountry);
-            });
-        });
-        
-        // Add a marker that will be placed on click
+        // ---------------------------------------------------------------------------
+        // Map result display
+        // ---------------------------------------------------------------------------
+
         let currentMarker = null;
         const mapResult = document.getElementById('mapResult');
-        
-        // Old handlers removed - functionality moved to handleMapClick
 
-        
         function showMapResult(html, success) {
             mapResult.innerHTML = html;
             if (success === null) {
-                // Loading state
                 mapResult.className = 'map-result';
                 mapResult.style.display = 'block';
                 mapResult.style.background = '#f8f9fa';
                 mapResult.style.border = '1px solid #e1e4e8';
                 mapResult.style.color = '#586069';
             } else {
+                // Clear any inline styles set during the loading state so CSS classes apply cleanly
+                mapResult.style.background = '';
+                mapResult.style.border = '';
+                mapResult.style.color = '';
                 mapResult.className = 'map-result ' + (success ? 'success' : 'error');
                 mapResult.style.display = 'block';
             }
         }
-        
-        // Single address elements (always available)
+
+        // ---------------------------------------------------------------------------
+        // Single address elements
+        // ---------------------------------------------------------------------------
+
         const singleAddressInput = document.getElementById('singleAddress');
-        const geocodeSingleBtn = document.getElementById('geocodeSingleBtn');
-        const singleResult = document.getElementById('singleResult');
-        
-        // Batch upload elements (only if logged in)
-        const uploadArea = document.getElementById('uploadArea');
-        const fileInput = document.getElementById('fileInput');
-        const fileName = document.getElementById('fileName');
-        const uploadForm = document.getElementById('uploadForm');
-        const submitBtn = document.getElementById('submitBtn');
-        const progress = document.getElementById('progress');
-        const status = document.getElementById('status');
-        const errorDiv = document.getElementById('error');
-        const successSummary = document.getElementById('successSummary');
-        const downloadAgainBtn = document.getElementById('downloadAgain');
-        
-        let lastDownloadData = null;
-        
-        // Single address geocoding
+        const geocodeSingleBtn   = document.getElementById('geocodeSingleBtn');
+        const singleResult       = document.getElementById('singleResult');
+
         geocodeSingleBtn.addEventListener('click', async () => {
             const address = singleAddressInput.value.trim();
-            
             if (!address) {
                 showSingleResult('Please enter an address or GPS coordinates', false);
                 return;
             }
-            
+
             geocodeSingleBtn.disabled = true;
             geocodeSingleBtn.textContent = 'Geocoding...';
             singleResult.style.display = 'none';
-            
+
             try {
+                const body = { address };
+                if (currentCountry) body.country = currentCountry;
+
                 const response = await fetch('/geocode_single', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ 
-                        address: address,
-                        country: currentCountry
-                    })
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
                 });
-                
                 const result = await response.json();
-                
+
                 if (result.success) {
-                    // Use labels from API response (already includes country-specific labels)
-                    const admin1Label = result.admin1_label || 'Admin Level 1';
-                    const admin2Label = result.admin2_label || 'Admin Level 2';
-                    
-                    showSingleResult(`
-                        <div class="result-row"><span class="result-label">Address:</span> ${result.address}</div>
-                        <div class="result-row"><span class="result-label">Latitude:</span> ${result.latitude.toFixed(6)}</div>
-                        <div class="result-row"><span class="result-label">Longitude:</span> ${result.longitude.toFixed(6)}</div>
-                        <div class="result-row"><span class="result-label">Confidence:</span> ${result.confidence}</div>
-                        <div class="result-row"><span class="result-label">${admin1Label} (P-Code):</span> ${result.admin1_pcode || 'N/A'}</div>
-                        <div class="result-row"><span class="result-label">${admin1Label} Name:</span> ${result.admin1_name || 'N/A'}</div>
-                        <div class="result-row"><span class="result-label">${admin2Label} (P-Code):</span> ${result.admin2_pcode || 'N/A'}</div>
-                        <div class="result-row"><span class="result-label">${admin2Label} Name:</span> ${result.admin2_name || 'N/A'}</div>
-                    `, true);
+                    showSingleResult(
+                        `<div class="result-row"><span class="result-label">Address:</span> ${result.address}</div>` +
+                        `<div class="result-row"><span class="result-label">Latitude:</span> ${result.latitude.toFixed(6)}</div>` +
+                        `<div class="result-row"><span class="result-label">Longitude:</span> ${result.longitude.toFixed(6)}</div>` +
+                        `<div class="result-row"><span class="result-label">Confidence:</span> ${result.confidence}</div>` +
+                        renderPcodeFields(result),
+                        true
+                    );
 
-                    // Add marker to map and center on the location
-                    const lat = result.latitude;
-                    const lon = result.longitude;
+                    if (currentMarker) map.removeLayer(currentMarker);
+                    currentMarker = L.marker([result.latitude, result.longitude]).addTo(map);
+                    currentMarker.bindPopup(popupText(result)).openPopup();
+                    map.setView([result.latitude, result.longitude], 12);
 
-                    // Remove previous marker if exists
-                    if (currentMarker) {
-                        map.removeLayer(currentMarker);
-                    }
-
-                    // Add new marker at the geocoded location
-                    currentMarker = L.marker([lat, lon]).addTo(map);
-
-                    // Add popup to the marker with location details
-                    // admin1Label/admin2Label already declared above
-                    currentMarker.bindPopup(`
-                        <strong>${result.admin1_name || `Unknown ${admin1Label}`}</strong><br>
-                        ${result.admin2_name || `Unknown ${admin2Label}`}<br>
-                        <small>P-Code: ${result.admin2_pcode || 'N/A'}</small><br>
-                        <small>${result.address}</small>
-                    `).openPopup();
-
-                    // Center and zoom the map to show the marker
-                    map.setView([lat, lon], 14);
-
-                    // Update the map result display
-                    showMapResult(`
-                        <div class="result-row"><span class="result-label">Latitude:</span> ${lat.toFixed(6)}</div>
-                        <div class="result-row"><span class="result-label">Longitude:</span> ${lon.toFixed(6)}</div>
-                        <div class="result-row"><span class="result-label">${admin1Label} (P-Code):</span> ${result.admin1_pcode || 'N/A'}</div>
-                        <div class="result-row"><span class="result-label">${admin1Label} Name:</span> ${result.admin1_name || 'N/A'}</div>
-                        <div class="result-row"><span class="result-label">${admin2Label} (P-Code):</span> ${result.admin2_pcode || 'N/A'}</div>
-                        <div class="result-row"><span class="result-label">${admin2Label} Name:</span> ${result.admin2_name || 'N/A'}</div>
-                    `, true);
+                    showMapResult(
+                        `<div class="result-row"><span class="result-label">Latitude:</span> ${result.latitude.toFixed(6)}</div>` +
+                        `<div class="result-row"><span class="result-label">Longitude:</span> ${result.longitude.toFixed(6)}</div>` +
+                        renderPcodeFields(result),
+                        true
+                    );
                 } else {
                     showSingleResult(result.error || 'Failed to geocode address', false);
                 }
@@ -1614,166 +1276,179 @@
                 geocodeSingleBtn.textContent = 'Geocode';
             }
         });
-        
-        // Allow Enter key to trigger geocoding
+
         singleAddressInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') {
-                geocodeSingleBtn.click();
-            }
+            if (e.key === 'Enter') geocodeSingleBtn.click();
         });
-        
+
         function showSingleResult(html, success) {
             singleResult.innerHTML = html;
             singleResult.className = 'single-result ' + (success ? 'success' : 'error');
             singleResult.style.display = 'block';
         }
-        
-        // Batch upload functionality (only if elements exist - user is logged in)
+
+        // ---------------------------------------------------------------------------
+        // Batch upload (only when logged in)
+        // ---------------------------------------------------------------------------
+
+        const uploadArea    = document.getElementById('uploadArea');
+        const fileInput     = document.getElementById('fileInput');
+        const fileName      = document.getElementById('fileName');
+        const uploadForm    = document.getElementById('uploadForm');
+        const submitBtn     = document.getElementById('submitBtn');
+        const progress      = document.getElementById('progress');
+        const status        = document.getElementById('status');
+        const errorDiv      = document.getElementById('error');
+        const successSummary = document.getElementById('successSummary');
+        const downloadAgainBtn = document.getElementById('downloadAgain');
+
+        let lastDownloadData = null;
+
         if (uploadArea && fileInput && uploadForm) {
-            // Click to upload
             uploadArea.addEventListener('click', () => fileInput.click());
-        
-        // File selection
-        fileInput.addEventListener('change', (e) => {
-            if (e.target.files.length > 0) {
-                fileName.textContent = `📎 ${e.target.files[0].name}`;
-                // Hide success summary when new file is selected
+
+            fileInput.addEventListener('change', (e) => {
+                if (e.target.files.length > 0) {
+                    fileName.textContent = `📎 ${e.target.files[0].name}`;
+                    successSummary.style.display = 'none';
+                }
+            });
+
+            uploadArea.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                uploadArea.classList.add('dragover');
+            });
+            uploadArea.addEventListener('dragleave', () => uploadArea.classList.remove('dragover'));
+            uploadArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                uploadArea.classList.remove('dragover');
+                if (e.dataTransfer.files.length > 0) {
+                    fileInput.files = e.dataTransfer.files;
+                    fileName.textContent = `📎 ${e.dataTransfer.files[0].name}`;
+                    successSummary.style.display = 'none';
+                }
+            });
+
+            downloadAgainBtn.addEventListener('click', () => {
+                if (lastDownloadData) {
+                    downloadFile(lastDownloadData.fileData, lastDownloadData.filename, lastDownloadData.mimetype);
+                }
+            });
+
+            uploadForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                if (!fileInput.files.length) {
+                    showError('Please select a file to upload');
+                    return;
+                }
+
+                const formData = new FormData(uploadForm);
+                if (currentCountry) formData.append('country', currentCountry);
+
+                progress.style.display = 'block';
+                errorDiv.style.display = 'none';
                 successSummary.style.display = 'none';
+                submitBtn.disabled = true;
+                status.textContent = 'Uploading and geocoding addresses...';
+
+                try {
+                    const response = await fetch('/geocode', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    if (!response.ok) {
+                        const err = await response.json();
+                        throw new Error(err.error || 'Failed to geocode addresses');
+                    }
+                    const result = await response.json();
+                    if (!result.success) throw new Error(result.error || 'Failed to geocode addresses');
+
+                    lastDownloadData = {
+                        fileData: result.file_data,
+                        filename: result.filename,
+                        mimetype: result.mimetype
+                    };
+                    downloadFile(result.file_data, result.filename, result.mimetype);
+                    displayStats(result.stats);
+                } catch (error) {
+                    showError(error.message);
+                } finally {
+                    progress.style.display = 'none';
+                    submitBtn.disabled = false;
+                }
+            });
+
+            function downloadFile(base64Data, filename, mimetype) {
+                const byteCharacters = atob(base64Data);
+                const byteArray = new Uint8Array(byteCharacters.length);
+                for (let i = 0; i < byteCharacters.length; i++) {
+                    byteArray[i] = byteCharacters.charCodeAt(i);
+                }
+                const blob = new Blob([byteArray], { type: mimetype });
+                const url = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url);
             }
-        });
-        
-        // Drag and drop
-        uploadArea.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            uploadArea.classList.add('dragover');
-        });
-        
-        uploadArea.addEventListener('dragleave', () => {
-            uploadArea.classList.remove('dragover');
-        });
-        
-        uploadArea.addEventListener('drop', (e) => {
-            e.preventDefault();
-            uploadArea.classList.remove('dragover');
-            
-            if (e.dataTransfer.files.length > 0) {
-                fileInput.files = e.dataTransfer.files;
-                fileName.textContent = `📎 ${e.dataTransfer.files[0].name}`;
-                successSummary.style.display = 'none';
+
+            function displayStats(stats) {
+                document.getElementById('statTotal').textContent   = stats.total;
+                document.getElementById('statSuccess').textContent = stats.successful;
+                document.getElementById('statFailed').textContent  = stats.failed;
+                document.getElementById('statSkipped').textContent = stats.skipped;
+                successSummary.style.display = 'block';
             }
-        });
-        
-        // Download again button
-        downloadAgainBtn.addEventListener('click', () => {
-            if (lastDownloadData) {
-                downloadFile(lastDownloadData.fileData, lastDownloadData.filename, lastDownloadData.mimetype);
+
+            function showError(message) {
+                errorDiv.textContent = `❌ ${message}`;
+                errorDiv.style.display = 'block';
             }
-        });
-        
-        // Form submission
-        uploadForm.addEventListener('submit', async (e) => {
-            e.preventDefault();
-            
-            if (!fileInput.files.length) {
-                showError('Please select a file to upload');
-                return;
-            }
-            
-            const formData = new FormData(uploadForm);
-            // Add selected country to form data
-            formData.append('country', currentCountry);
-            
-            // Add selected provinces to form data
-            const provinceSelect = document.getElementById('provinceSelect');
-            if (provinceSelect) {
-                const selectedProvinces = Array.from(provinceSelect.selectedOptions).map(option => option.value);
-                selectedProvinces.forEach(province => {
-                    formData.append('admin1_names[]', province);
+        }
+
+        // ---------------------------------------------------------------------------
+        // Initialisation
+        // ---------------------------------------------------------------------------
+
+        document.addEventListener('DOMContentLoaded', () => {
+            initializeMap();
+            loadCountries();
+
+            // Boundary level selector
+            const boundaryLevelSelect = document.getElementById('boundaryLevelSelect');
+            if (boundaryLevelSelect) {
+                boundaryLevelSelect.addEventListener('change', (e) => {
+                    currentBoundaryLevel = parseInt(e.target.value, 10);
+                    loadBoundaryLayer(currentCountry, currentBoundaryLevel);
                 });
             }
-            
-            // Show progress
-            progress.style.display = 'block';
-            errorDiv.style.display = 'none';
-            successSummary.style.display = 'none';
-            submitBtn.disabled = true;
-            status.textContent = 'Uploading and geocoding addresses...';
-            
-            try {
-                const response = await fetch('/geocode', {
-                    method: 'POST',
-                    body: formData
+
+            // Country selector change
+            const countrySelect = document.getElementById('countrySelect');
+            if (countrySelect) {
+                countrySelect.addEventListener('change', (e) => {
+                    currentCountry = e.target.value;
+                    try {
+                        const url = new URL(window.location);
+                        url.searchParams.set('country', currentCountry);
+                        window.history.pushState({}, '', url);
+                    } catch (_) {}
+                    centerMapOnSelectedCountry();
+                    const _loadFn = () => loadAvailableLevels(currentCountry);
+                    'requestIdleCallback' in window ? requestIdleCallback(_loadFn) : setTimeout(_loadFn, 150);
                 });
-                
-                if (!response.ok) {
-                    const error = await response.json();
-                    throw new Error(error.error || 'Failed to geocode addresses');
-                }
-                
-                const result = await response.json();
-                
-                if (!result.success) {
-                    throw new Error(result.error || 'Failed to geocode addresses');
-                }
-                
-                // Store download data
-                lastDownloadData = {
-                    fileData: result.file_data,
-                    filename: result.filename,
-                    mimetype: result.mimetype
-                };
-                
-                // Download the file
-                downloadFile(result.file_data, result.filename, result.mimetype);
-                
-                // Display statistics
-                displayStats(result.stats);
-                
-                progress.style.display = 'none';
-                submitBtn.disabled = false;
-                
-            } catch (error) {
-                showError(error.message);
-                progress.style.display = 'none';
-                submitBtn.disabled = false;
+            }
+
+            // Auto-geocode address from URL param
+            const addressParam = urlParams.get('address');
+            if (addressParam) {
+                singleAddressInput.value = addressParam;
+                setTimeout(() => geocodeSingleBtn.click(), 800);
             }
         });
-        
-        function downloadFile(base64Data, filename, mimetype) {
-            // Convert base64 to blob
-            const byteCharacters = atob(base64Data);
-            const byteNumbers = new Array(byteCharacters.length);
-            for (let i = 0; i < byteCharacters.length; i++) {
-                byteNumbers[i] = byteCharacters.charCodeAt(i);
-            }
-            const byteArray = new Uint8Array(byteNumbers);
-            const blob = new Blob([byteArray], { type: mimetype });
-            
-            // Create download link
-            const url = window.URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = filename;
-            
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            window.URL.revokeObjectURL(url);
-        }
-        
-        function displayStats(stats) {
-            document.getElementById('statTotal').textContent = stats.total;
-            document.getElementById('statSuccess').textContent = stats.successful;
-            document.getElementById('statFailed').textContent = stats.failed;
-            document.getElementById('statSkipped').textContent = stats.skipped;
-            successSummary.style.display = 'block';
-        }
-        
-        function showError(message) {
-            errorDiv.textContent = `❌ ${message}`;
-            errorDiv.style.display = 'block';
-        }
-        } // End of batch upload functionality
     </script>
 </body>
 </html>

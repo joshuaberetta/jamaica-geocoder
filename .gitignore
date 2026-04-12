@@ -17,9 +17,6 @@ __pycache__/
 *.csv
 *.geojson
 !addresses.csv
-!communities.geojson
-!boundaries/*.geojson
-!odpem.geojson
 data/
 tmp/
 

@@ -1,629 +1,649 @@
 #!/usr/bin/env python3
 """
-Humanitarian Geocoder - Web interface for multi-country address geocoding.
-Upload CSV, get geocoded results with admin boundaries for humanitarian response.
+Humanitarian Geocoder - Flask web application backed by PostGIS.
 """
 
-from flask import Flask, render_template, request, send_file, jsonify, redirect, url_for, session, make_response
-from flask_cors import CORS
-from flask_compress import Compress
-from werkzeug.utils import secure_filename
-import os
+import base64
+import hashlib
 import io
 import json
-import gzip
-import pandas as pd
-import geopandas as gpd
-from shapely.geometry import Point
-from pathlib import Path
+import os
 import tempfile
-from dotenv import load_dotenv
 from functools import wraps
-import hashlib
+from threading import Lock
 
-# Import geocoding functions from geocode.py
-from geocode import geocode_address, geocode_dataframe, spatial_join_boundaries
-from countries.country_config import get_country_config, get_all_countries, DEFAULT_COUNTRY
+import pandas as pd
+import psycopg2
+import psycopg2.extras
+from dotenv import load_dotenv
+from flask import (
+    Flask,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    session,
+    url_for,
+)
+from flask_compress import Compress
+from flask_cors import CORS
+from werkzeug.utils import secure_filename
+
+from geocode import geocode_address, geocode_dataframe, get_db_conn, resolve_pcodes
 
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)  # Enable CORS for all routes
-Compress(app)  # Enable Gzip compression
-app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024  # 16MB max file size
-app.config['UPLOAD_FOLDER'] = tempfile.gettempdir()
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
+CORS(app)
+Compress(app)
 
-# Login credentials from environment variables
-USERNAME = os.getenv('LOGIN_USERNAME', 'admin')
-PASSWORD = os.getenv('LOGIN_PASSWORD', 'admin')
+# ---------------------------------------------------------------------------
+# In-memory response caches (invalidated on ingest, not on restart)
+# ---------------------------------------------------------------------------
 
-# Login required decorator
+_countries_cache: dict = {}        # {"data": [...], "json": "...", "etag": "..."}
+_boundaries_cache: dict = {}       # {(iso2, level): {"json": "...", "etag": "..."}}
+_cache_lock = Lock()
+app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB
+app.config["UPLOAD_FOLDER"] = tempfile.gettempdir()
+app.config["SECRET_KEY"] = os.getenv(
+    "SECRET_KEY", "dev-secret-key-change-in-production"
+)
+
+USERNAME = os.getenv("LOGIN_USERNAME", "admin")
+PASSWORD = os.getenv("LOGIN_PASSWORD", "admin")
+
+
+# ---------------------------------------------------------------------------
+# Auth helpers
+# ---------------------------------------------------------------------------
+
+
 def login_required(f):
     @wraps(f)
-    def decorated_function(*args, **kwargs):
-        if not session.get('logged_in'):
-            return redirect(url_for('login'))
+    def decorated(*args, **kwargs):
+        if not session.get("logged_in"):
+            return redirect(url_for("login"))
         return f(*args, **kwargs)
-    return decorated_function
 
-# Load boundaries once at startup - support multiple countries
-boundaries_cache = {}  # Dictionary: country_code -> gdf
-boundaries_geojson_cache = {}  # Dictionary: country_code -> geojson string
-boundaries_gzip_cache = {}  # Dictionary: country_code -> gzipped geojson bytes
-boundaries_etag_cache = {}  # Dictionary: country_code -> etag
+    return decorated
 
-def load_boundaries(country: str = DEFAULT_COUNTRY):
-    """
-    Load boundaries for a specific country.
-    
-    Parameters:
-    - country: Country code or name (e.g., 'jamaica', 'mozambique', 'JM', 'MZ')
-    
-    Returns:
-    - GeoDataFrame with boundaries or None if not found
-    """
-    global boundaries_cache, boundaries_geojson_cache, boundaries_gzip_cache, boundaries_etag_cache
-    
+
+# ---------------------------------------------------------------------------
+# Startup check
+# ---------------------------------------------------------------------------
+
+
+def check_db():
     try:
-        country_config = get_country_config(country)
-        country_code = country_config['code']
-        
-        # Check if already loaded
-        if country_code in boundaries_cache:
-            return boundaries_cache[country_code]
-        
-        boundary_file = country_config['boundary_file']
-        
-        if not Path(boundary_file).exists():
-            print(f"Warning: Boundary file not found: {boundary_file}")
-            return None
-        
-        print(f"Loading boundaries for {country_config['name']} from {boundary_file}...")
-        gdf = gpd.read_file(boundary_file)
-        print(f"Loaded {len(gdf)} boundary features for {country_config['name']}")
-        
-        # Convert datetime columns to string to avoid JSON serialization errors
-        for col in gdf.columns:
-            if pd.api.types.is_datetime64_any_dtype(gdf[col]):
-                gdf[col] = gdf[col].astype(str)
-        
-        # Cache the GeoDataFrame
-        boundaries_cache[country_code] = gdf
-        
-        # Pre-compute GeoJSON and ETag for caching
-        gdf_wgs84 = gdf.to_crs('EPSG:4326') if gdf.crs and gdf.crs != 'EPSG:4326' else gdf
-        geojson_str = gdf_wgs84.to_json()
-        etag = hashlib.md5(geojson_str.encode()).hexdigest()
-        
-        boundaries_geojson_cache[country_code] = geojson_str
-        boundaries_gzip_cache[country_code] = gzip.compress(geojson_str.encode('utf-8'))
-        boundaries_etag_cache[country_code] = etag
-        
-        print(f"Cached boundaries GeoJSON for {country_config['name']} (ETag: {etag})")
-        
-        return gdf
+        with get_db_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM cod_adm LIMIT 1")
+        print("Database connection OK")
     except Exception as e:
-        print(f"Error loading boundaries for {country}: {e}")
-        return None
+        print(f"WARNING: Database not reachable at startup: {e}")
 
-@app.route('/login', methods=['GET', 'POST'])
+
+# ---------------------------------------------------------------------------
+# Auth routes
+# ---------------------------------------------------------------------------
+
+
+@app.route("/login", methods=["GET", "POST"])
 def login():
-    if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        
+    if request.method == "POST":
+        username = request.form.get("username")
+        password = request.form.get("password")
         if username == USERNAME and password == PASSWORD:
-            session['logged_in'] = True
-            return redirect(url_for('index'))
-        else:
-            return render_template('login.html', error='Invalid username or password')
-    
-    # If already logged in, redirect to main page
-    if session.get('logged_in'):
-        return redirect(url_for('index'))
-    
-    return render_template('login.html')
+            session["logged_in"] = True
+            return redirect(url_for("index"))
+        return render_template("login.html", error="Invalid username or password")
+    if session.get("logged_in"):
+        return redirect(url_for("index"))
+    return render_template("login.html")
 
-@app.route('/logout')
+
+@app.route("/logout")
 def logout():
-    session.pop('logged_in', None)
-    return redirect(url_for('index'))
+    session.pop("logged_in", None)
+    return redirect(url_for("index"))
 
-@app.route('/')
+
+# ---------------------------------------------------------------------------
+# Main page
+# ---------------------------------------------------------------------------
+
+
+@app.route("/")
 def index():
-    # Get list of available countries
-    countries = get_all_countries()
-    return render_template('index.html', logged_in=session.get('logged_in', False), countries=countries)
+    return render_template("index.html", logged_in=session.get("logged_in", False))
 
-@app.route('/geocode', methods=['POST'])
-@login_required
-def geocode():
+
+# ---------------------------------------------------------------------------
+# Country list (DB-driven)
+# ---------------------------------------------------------------------------
+
+
+@app.route("/countries")
+def countries():
+    """All ingested countries with computed centroid for map centering."""
+    global _countries_cache
+
+    with _cache_lock:
+        cached = _countries_cache.get("json")
+        etag = _countries_cache.get("etag")
+
+    if cached:
+        if request.headers.get("If-None-Match") == etag:
+            return "", 304
+        from flask import Response
+        resp = Response(cached, mimetype="application/json")
+        resp.headers["ETag"] = etag
+        resp.headers["Cache-Control"] = "public, max-age=300"
+        return resp
+
     try:
-        # Get country parameter (default to mozambique for backward compatibility)
-        country = request.form.get('country', DEFAULT_COUNTRY)
-        country_config = get_country_config(country)
-        
-        # Get admin1 (province) filter if provided
-        admin1_filter = request.form.getlist('admin1_names[]')
-        
-        # Check if this is a single address request
-        if request.is_json or request.form.get('single_address'):
-            return geocode_single()
-        
-        # Check if file was uploaded
-        if 'file' not in request.files:
-            return jsonify({'error': 'No file uploaded'}), 400
-        
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'error': 'No file selected'}), 400
-        
-        # Get limit parameter if provided
-        limit = request.form.get('limit', type=int)
-        
-        # Get custom output filename if provided
-        output_filename = request.form.get('output_filename', '').strip()
-        
-        # Read the CSV file
-        try:
-            # Check file extension to determine how to read it
-            filename = secure_filename(file.filename)
-            if filename.endswith('.xlsx') or filename.endswith('.xls'):
-                df = pd.read_excel(file, engine='openpyxl')
-            else:
-                # Try CSV with semicolon separator
-                df = pd.read_csv(file, encoding='utf-8-sig', sep=';')
-            
-            # Convert date format from m/d to yyyy-mm-dd
-            if 'date' in df.columns:
-                def convert_date(date_str):
-                    if pd.isna(date_str):
-                        return date_str
-                    try:
-                        parts = str(date_str).strip().split('/')
-                        if len(parts) == 2:
-                            month, day = parts
-                            return f"2025-{int(month):02d}-{int(day):02d}"
-                        return date_str
-                    except:
-                        return date_str
-                
-                df['date'] = df['date'].apply(convert_date)
-            
-            # Apply limit if specified
-            if limit and limit > 0:
-                df = df.head(limit)
-            
-            if 'address' not in df.columns:
-                return jsonify({'error': 'File must have an "address" column'}), 400
-            
-        except Exception as e:
-            return jsonify({'error': f'Failed to read file: {str(e)}'}), 400
-        
-        # Load boundaries for the selected country
-        boundaries = load_boundaries(country)
-        if boundaries is None:
-            return jsonify({'error': f'Boundary data not available for {country_config["name"]}'}), 500
-        
-        # Filter boundaries by admin1 (province) if specified
-        admin1_filter = request.form.getlist('admin1_names[]')
-        if admin1_filter and len(admin1_filter) > 0:
-            admin1_config = country_config.get('admin_levels', {}).get('level1', {})
-            admin1_name_field = admin1_config.get('name_field', 'adm1_name')
-            
-            if admin1_name_field in boundaries.columns:
-                boundaries = boundaries[boundaries[admin1_name_field].isin(admin1_filter)].copy()
-                print(f"Filtered boundaries to {len(admin1_filter)} provinces: {', '.join(admin1_filter)}")
-                print(f"Boundary features after filtering: {len(boundaries)}")
-        
-        # Geocode addresses - use minimal delay to avoid timeout
-        points_gdf, stats = geocode_dataframe(df, address_column='address', delay=0.05, country_config=country_config)
-        
-        # Spatial join with boundaries
-        result = spatial_join_boundaries(points_gdf, boundaries)
-        
-        # Convert to DataFrame and prepare for download
-        result_df = pd.DataFrame(result.drop(columns='geometry'))
-        
-        # Create output file
-        output = io.BytesIO()
-        
-        # Check requested format
-        output_format = request.form.get('format', 'csv')
-        
-        # Determine filename
-        if output_filename:
-            # Remove any existing extension from custom filename
-            base_filename = output_filename.rsplit('.', 1)[0]
-        else:
-            base_filename = 'geocoded_addresses'
-        
-        if output_format == 'xlsx':
-            result_df.to_excel(output, index=False, engine='openpyxl')
-            output.seek(0)
-            mimetype = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-            filename = f'{base_filename}.xlsx'
-        else:
-            result_df.to_csv(output, index=False)
-            output.seek(0)
-            mimetype = 'text/csv'
-            filename = f'{base_filename}.csv'
-        
-        # Encode file as base64 to send with JSON
-        import base64
-        output.seek(0)
-        file_data = base64.b64encode(output.read()).decode('utf-8')
-        
-        return jsonify({
-            'success': True,
-            'stats': stats,
-            'file_data': file_data,
-            'filename': filename,
-            'mimetype': mimetype
-        })
-        
+        with get_db_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute("""
+                    SELECT
+                        iso2, iso3, country_name,
+                        MAX(adm_level) AS max_adm_level,
+                        ST_X(ST_Centroid(ST_Extent(geom))) AS center_lon,
+                        ST_Y(ST_Centroid(ST_Extent(geom))) AS center_lat
+                    FROM cod_adm
+                    GROUP BY iso2, iso3, country_name
+                    ORDER BY country_name
+                """)
+                rows = cur.fetchall()
+
+        result = []
+        for row in rows:
+            result.append({
+                "code": row["iso2"],
+                "iso3": row["iso3"],
+                "name": row["country_name"],
+                "key": row["iso2"].lower(),
+                "max_adm_level": row["max_adm_level"],
+                "map_center": {
+                    "lat": round(row["center_lat"], 4) if row["center_lat"] else 0,
+                    "lon": round(row["center_lon"], 4) if row["center_lon"] else 0,
+                    "zoom": 6,
+                },
+            })
+
+        body = json.dumps(result)
+        etag = hashlib.md5(body.encode()).hexdigest()
+        with _cache_lock:
+            _countries_cache["json"] = body
+            _countries_cache["etag"] = etag
+
+        if request.headers.get("If-None-Match") == etag:
+            return "", 304
+
+        from flask import Response
+        resp = Response(body, mimetype="application/json")
+        resp.headers["ETag"] = etag
+        resp.headers["Cache-Control"] = "public, max-age=300"
+        return resp
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
-@app.route('/geocode', methods=['GET'])
+
+# ---------------------------------------------------------------------------
+# Available admin levels for a country
+# ---------------------------------------------------------------------------
+
+
+@app.route("/api/available_levels")
+def available_levels():
+    """Return the distinct admin levels present in the DB for a country."""
+    iso2 = request.args.get("country", "").upper()
+    if not iso2:
+        return jsonify({"error": "country parameter required"}), 400
+    try:
+        with get_db_conn() as conn:
+            with conn.cursor() as cur:
+                # Only include a level if the level's own pcode column is
+                # actually populated — filters out sparse/empty higher levels
+                # written by the ingest even though the country lacks that data.
+                cur.execute(
+                    """
+                    SELECT DISTINCT adm_level FROM cod_adm
+                    WHERE iso2 = %s
+                      AND CASE adm_level
+                            WHEN 1 THEN adm1_pcode
+                            WHEN 2 THEN adm2_pcode
+                            WHEN 3 THEN adm3_pcode
+                            WHEN 4 THEN adm4_pcode
+                          END IS NOT NULL
+                    ORDER BY adm_level
+                    """,
+                    [iso2],
+                )
+                levels = [r[0] for r in cur.fetchall()]
+        return jsonify({"iso2": iso2, "levels": levels})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Admin-level name list (province filter)
+# ---------------------------------------------------------------------------
+
+
+@app.route("/api/admin_levels")
+def get_admin_levels():
+    """Distinct names at a given admin level for one country."""
+    try:
+        iso2 = request.args.get("country", "").upper()
+        if not iso2:
+            return jsonify({"error": "country parameter required"}), 400
+
+        try:
+            level = int(request.args.get("level", 1))
+        except ValueError:
+            return jsonify({"error": "level must be an integer"}), 400
+
+        if level not in range(5):
+            return jsonify({"error": "level must be 0-4"}), 400
+
+        name_col = f"adm{level}_name"
+        with get_db_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT DISTINCT {name_col}
+                    FROM cod_adm
+                    WHERE iso2 = %s AND adm_level >= %s AND {name_col} IS NOT NULL
+                    ORDER BY {name_col}
+                    """,
+                    [iso2, level],
+                )
+                names = [r[0] for r in cur.fetchall()]
+
+        return jsonify({
+            "iso2": iso2,
+            "level": level,
+            "label": f"ADM{level}",
+            "values": names,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# GET /boundaries.geojson  -- boundary polygons for a country/level (public)
+# ---------------------------------------------------------------------------
+
+
+@app.route("/boundaries.geojson")
+def boundaries_geojson():
+    """
+    Boundary polygons for a given country and admin level as GeoJSON.
+    Results are cached in memory after the first request per (country, level).
+
+    Query params:
+        country  ISO2 code (required)
+        level    admin level integer, default 1
+    """
+    iso2 = request.args.get("country", "").upper()
+    if not iso2:
+        return jsonify({"error": "country parameter required"}), 400
+
+    try:
+        level = int(request.args.get("level", 1))
+    except ValueError:
+        return jsonify({"error": "level must be an integer"}), 400
+
+    if level not in range(5):
+        return jsonify({"error": "level must be 0-4"}), 400
+
+    cache_key = (iso2, level)
+    with _cache_lock:
+        cached = _boundaries_cache.get(cache_key)
+
+    if cached:
+        etag = cached["etag"]
+        if request.headers.get("If-None-Match") == etag:
+            return "", 304
+        from flask import Response
+        resp = Response(cached["json"], mimetype="application/json")
+        resp.headers["ETag"] = etag
+        resp.headers["Cache-Control"] = "public, max-age=3600"
+        return resp
+
+    name_col = f"adm{level}_name"
+    pcode_col = f"adm{level}_pcode"
+    # Include all parent level columns so the frontend can show the full hierarchy
+    parent_cols = "".join(
+        f"adm{n}_name, adm{n}_pcode, " for n in range(level)
+    )
+
+    try:
+        with get_db_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    f"""
+                    SELECT
+                        {pcode_col} AS pcode,
+                        {name_col}  AS name,
+                        {parent_cols}
+                        ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, 0.001))::json AS geometry
+                    FROM cod_adm
+                    WHERE iso2 = %s AND adm_level = %s
+                    """,
+                    [iso2, level],
+                )
+                rows = cur.fetchall()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    features = []
+    for row in rows:
+        geom = row.pop("geometry")
+        features.append({
+            "type": "Feature",
+            "geometry": geom,
+            "properties": dict(row),
+        })
+
+    fc = json.dumps({"type": "FeatureCollection", "features": features})
+    etag = hashlib.md5(fc.encode()).hexdigest()
+
+    with _cache_lock:
+        _boundaries_cache[cache_key] = {"json": fc, "etag": etag}
+
+    if request.headers.get("If-None-Match") == etag:
+        return "", 304
+
+    from flask import Response
+    resp = Response(fc, mimetype="application/json")
+    resp.headers["ETag"] = etag
+    resp.headers["Cache-Control"] = "public, max-age=3600"
+    return resp
+
+
+# ---------------------------------------------------------------------------
+# GET /geocode  -- coordinate or address lookup (public)
+# ---------------------------------------------------------------------------
+
+
+@app.route("/geocode", methods=["GET"])
 def geocode_get():
-    """GET endpoint: resolve pcodes from coordinates or address via query parameters (public endpoint).
-
-    Priority: coordinates (lat/lon) are used directly if provided; address is geocoded as a fallback.
+    """
+    Resolve P-codes from coordinates or a free-text address.
 
     Query parameters:
         lat / latitude  -- decimal latitude
         lon / longitude -- decimal longitude
-        address         -- street address or 'lat, lon' string
-        country         -- country key (optional, defaults to DEFAULT_COUNTRY)
+        address         -- free-text address (geocoded via Google Places)
+        country         -- ISO2 code to scope the lookup (optional)
     """
     try:
-        lat_raw = request.args.get('lat') or request.args.get('latitude')
-        lon_raw = request.args.get('lon') or request.args.get('longitude')
-        address_input = request.args.get('address', '').strip()
-        country = request.args.get('country', DEFAULT_COUNTRY)
+        lat_raw = request.args.get("lat") or request.args.get("latitude")
+        lon_raw = request.args.get("lon") or request.args.get("longitude")
+        address_input = request.args.get("address", "").strip()
+        iso2 = request.args.get("country", "").upper() or None
 
-        country_config = get_country_config(country)
-        boundaries = load_boundaries(country)
-        if boundaries is None:
-            return jsonify({'error': f'Boundary data not available for {country_config["name"]}'}), 500
+        confidence = None
 
-        # --- coordinate path (priority) ---
         if lat_raw is not None and lon_raw is not None:
             try:
                 lat = float(lat_raw)
                 lon = float(lon_raw)
             except ValueError:
-                return jsonify({'error': 'Invalid latitude or longitude format'}), 400
-
-            point = Point(lon, lat)
-            point_gdf = gpd.GeoDataFrame(
-                {'latitude': [lat], 'longitude': [lon]},
-                geometry=[point],
-                crs='EPSG:4326'
-            )
-            joined = spatial_join_boundaries(point_gdf, boundaries)
-            if len(joined) > 0:
-                row = joined.iloc[0]
-                admin_levels = country_config['admin_levels']
-                return jsonify({
-                    'success': True,
-                    'latitude': lat,
-                    'longitude': lon,
-                    'admin1_pcode': row.get(admin_levels['level1']['pcode_field']),
-                    'admin1_name': row.get(admin_levels['level1']['name_field']),
-                    'admin1_label': admin_levels['level1']['label'],
-                    'admin2_pcode': row.get(admin_levels['level2']['pcode_field']),
-                    'admin2_name': row.get(admin_levels['level2']['name_field']),
-                    'admin2_label': admin_levels['level2']['label'],
-                    'country': country_config['name'],
-                    'country_code': country_config['code']
-                })
-            else:
-                return jsonify({
-                    'success': False,
-                    'error': 'Could not match to administrative boundaries',
-                    'latitude': lat,
-                    'longitude': lon
-                })
-
-        # --- address path ---
-        if not address_input:
-            return jsonify({'error': 'Provide lat & lon query parameters, or an address parameter'}), 400
-
-        result = geocode_address(address_input, country_config)
-        if result is None:
-            return jsonify({'success': False, 'error': 'Could not geocode the address', 'address': address_input})
-
-        lat, lon, confidence = result
-        point = Point(lon, lat)
-        point_gdf = gpd.GeoDataFrame(
-            {'address': [address_input], 'latitude': [lat], 'longitude': [lon], 'confidence': [confidence]},
-            geometry=[point],
-            crs='EPSG:4326'
-        )
-        joined = spatial_join_boundaries(point_gdf, boundaries)
-        if len(joined) > 0:
-            row = joined.iloc[0]
-            admin_levels = country_config['admin_levels']
-            return jsonify({
-                'success': True,
-                'address': address_input,
-                'latitude': lat,
-                'longitude': lon,
-                'confidence': confidence,
-                'admin1_pcode': row.get(admin_levels['level1']['pcode_field']),
-                'admin1_name': row.get(admin_levels['level1']['name_field']),
-                'admin1_label': admin_levels['level1']['label'],
-                'admin2_pcode': row.get(admin_levels['level2']['pcode_field']),
-                'admin2_name': row.get(admin_levels['level2']['name_field']),
-                'admin2_label': admin_levels['level2']['label'],
-                'country': country_config['name'],
-                'country_code': country_config['code']
-            })
+                return jsonify({"error": "Invalid latitude or longitude"}), 400
+        elif address_input:
+            result = geocode_address(address_input)
+            if not result:
+                return jsonify({"success": False, "error": "Could not geocode address"}), 404
+            lat, lon, confidence = result
         else:
-            return jsonify({
-                'success': False,
-                'error': 'Could not match to administrative boundaries',
-                'address': address_input,
-                'latitude': lat,
-                'longitude': lon,
-                'confidence': confidence
-            })
+            return jsonify({"error": "Provide lat/lon or address parameters"}), 400
+
+        pcodes = resolve_pcodes(lat, lon, iso2=iso2)
+        if not pcodes:
+            return jsonify({"success": False, "error": "Point outside known boundaries"}), 404
+
+        response = {"success": True, "latitude": lat, "longitude": lon}
+        if confidence:
+            response["confidence"] = confidence
+        response.update(pcodes)
+        return jsonify(response)
 
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
 
-@app.route('/geocode_single', methods=['POST'])
-def geocode_single():
-    """Geocode a single address or GPS coordinate (public endpoint)."""
+# ---------------------------------------------------------------------------
+# POST /geocode  -- CSV/XLSX batch upload (requires login)
+# ---------------------------------------------------------------------------
+
+
+@app.route("/geocode", methods=["POST"])
+@login_required
+def geocode_post():
     try:
-        data = request.get_json() if request.is_json else request.form
-        address_input = data.get('address', '').strip()
-        country = data.get('country', DEFAULT_COUNTRY)
-        
-        if not address_input:
-            return jsonify({'error': 'Address or GPS coordinates required'}), 400
-        
-        # Get country configuration
-        country_config = get_country_config(country)
-        
-        # Load boundaries for the selected country
-        boundaries = load_boundaries(country)
-        if boundaries is None:
-            return jsonify({'error': f'Boundary data not available for {country_config["name"]}'}), 500
-        
-        # Geocode the address
-        result = geocode_address(address_input, country_config)
-        
-        if result is None:
-            return jsonify({
-                'success': False,
-                'error': 'Could not geocode the address',
-                'address': address_input
-            })
-        
-        lat, lon, confidence = result
-        
-        # Create a point and find which boundaries it falls in
-        point = Point(lon, lat)
-        point_gdf = gpd.GeoDataFrame(
-            {'address': [address_input], 'latitude': [lat], 'longitude': [lon], 'confidence': [confidence]},
-            geometry=[point],
-            crs='EPSG:4326'
-        )
-        
-        # Perform spatial join
-        joined = spatial_join_boundaries(point_gdf, boundaries)
-        
-        # Extract the result - use admin level fields from country config
-        if len(joined) > 0:
-            row = joined.iloc[0]
-            admin_levels = country_config['admin_levels']
-            
-            response_data = {
-                'success': True,
-                'address': address_input,
-                'latitude': lat,
-                'longitude': lon,
-                'confidence': confidence,
-                'admin1_pcode': row.get(admin_levels['level1']['pcode_field']),
-                'admin1_name': row.get(admin_levels['level1']['name_field']),
-                'admin1_label': admin_levels['level1']['label'],
-                'admin2_pcode': row.get(admin_levels['level2']['pcode_field']),
-                'admin2_name': row.get(admin_levels['level2']['name_field']),
-                'admin2_label': admin_levels['level2']['label'],
-                'country': country_config['name'],
-                'country_code': country_config['code']
-            }
-            return jsonify(response_data)
-        else:
-            return jsonify({
-                'success': False,
-                'error': 'Could not match to administrative boundaries',
-                'address': address_input,
-                'latitude': lat,
-                'longitude': lon,
-                'confidence': confidence
-            })
-        
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        iso2 = request.form.get("country", "").upper() or None
+        output_filename = request.form.get("output_filename", "").strip()
 
-@app.route('/api/admin_levels')
-def get_admin_levels():
-    """Get list of admin1 (province) names for a country."""
-    try:
-        country = request.args.get('country', DEFAULT_COUNTRY)
-        country_config = get_country_config(country)
-        
-        # Load boundaries if not already loaded
-        gdf = load_boundaries(country)
-        
-        if gdf is None:
-            return jsonify({'error': 'Boundaries not found'}), 404
-        
-        # Get admin1 level configuration
-        admin1_config = country_config.get('admin_levels', {}).get('level1', {})
-        admin1_name_field = admin1_config.get('name_field', 'adm1_name')
-        
-        if admin1_name_field not in gdf.columns:
-            return jsonify({'error': f'Admin level field {admin1_name_field} not found'}), 400
-        
-        # Get unique admin1 names, sorted
-        admin1_names = sorted(gdf[admin1_name_field].dropna().unique().tolist())
-        
-        return jsonify({
-            'country': country_config['name'],
-            'level': 'admin1',
-            'label': admin1_config.get('label', 'Province'),
-            'values': admin1_names
-        })
-    
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        # Look up country name to use as geocoding hint
+        country_hint = None
+        if iso2:
+            try:
+                with get_db_conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT DISTINCT country_name FROM cod_adm WHERE iso2 = %s LIMIT 1",
+                            [iso2],
+                        )
+                        row = cur.fetchone()
+                if row:
+                    country_hint = row[0]
+            except Exception:
+                pass
 
-@app.route('/boundaries.geojson')
-def get_boundaries():
-    """Serve the boundaries GeoJSON file reprojected to WGS84 (public endpoint) with caching."""
-    try:
-        # Get country parameter (default to mozambique)
-        country = request.args.get('country', DEFAULT_COUNTRY)
-        
-        # Load boundaries if not already loaded
-        load_boundaries(country)
-        
-        country_config = get_country_config(country)
-        country_code = country_config['code']
-        
-        if country_code not in boundaries_geojson_cache:
-            return jsonify({'error': f'Boundary file not found for {country_config["name"]}'}), 404
-        
-        # Check if client has cached version (ETag)
-        client_etag = request.headers.get('If-None-Match')
-        server_etag = boundaries_etag_cache.get(country_code)
-        
-        if client_etag and server_etag and client_etag == f'"{server_etag}"':
-            return '', 304  # Not Modified
-        
-        # Create response with pre-compressed data
-        if country_code in boundaries_gzip_cache:
-            response = make_response(boundaries_gzip_cache[country_code])
-            response.headers['Content-Encoding'] = 'gzip'
-            response.headers['Content-Length'] = len(boundaries_gzip_cache[country_code])
-        else:
-            # Fallback to uncompressed (shouldn't happen if loaded correctly)
-            response = make_response(boundaries_geojson_cache[country_code])
-            
-        response.headers['Content-Type'] = 'application/json'
-        response.headers['ETag'] = f'"{server_etag}"'
-        response.headers['Cache-Control'] = 'public, max-age=86400'  # Cache for 24 hours
-        
-        return response
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        if "file" not in request.files:
+            return jsonify({"error": "No file uploaded"}), 400
 
-@app.route('/reverse_geocode', methods=['POST'])
-def reverse_geocode():
-    """Get pcode information for a lat/lon coordinate (public endpoint)."""
-    try:
-        data = request.get_json() if request.is_json else request.form
-        lat = data.get('latitude') or data.get('lat')
-        lon = data.get('longitude') or data.get('lon')
-        country = data.get('country', DEFAULT_COUNTRY)
-        
-        if lat is None or lon is None:
-            return jsonify({'error': 'Latitude and longitude required'}), 400
-        
+        file = request.files["file"]
+        if not file.filename:
+            return jsonify({"error": "No file selected"}), 400
+
+        limit = request.form.get("limit", type=int)
+
         try:
-            lat = float(lat)
-            lon = float(lon)
-        except ValueError:
-            return jsonify({'error': 'Invalid latitude or longitude format'}), 400
-        
-        # Get country configuration
-        country_config = get_country_config(country)
-        
-        # Load boundaries for the selected country
-        boundaries = load_boundaries(country)
-        if boundaries is None:
-            return jsonify({'error': f'Boundary data not available for {country_config["name"]}'}), 500
-        
-        # Create a point from the coordinates
-        point = Point(lon, lat)
-        point_gdf = gpd.GeoDataFrame(
-            {'latitude': [lat], 'longitude': [lon]},
-            geometry=[point],
-            crs='EPSG:4326'
+            filename = secure_filename(file.filename)
+            if filename.endswith((".xlsx", ".xls")):
+                df = pd.read_excel(file, engine="openpyxl")
+            else:
+                df = pd.read_csv(file, encoding="utf-8-sig", sep=";")
+
+            if "date" in df.columns:
+                def convert_date(date_str):
+                    if pd.isna(date_str):
+                        return date_str
+                    try:
+                        parts = str(date_str).strip().split("/")
+                        if len(parts) == 2:
+                            month, day = parts
+                            return f"2025-{int(month):02d}-{int(day):02d}"
+                        return date_str
+                    except Exception:
+                        return date_str
+
+                df["date"] = df["date"].apply(convert_date)
+
+            if limit and limit > 0:
+                df = df.head(limit)
+
+            if "address" not in df.columns:
+                return jsonify({"error": 'File must have an "address" column'}), 400
+
+        except Exception as e:
+            return jsonify({"error": f"Failed to read file: {e}"}), 400
+
+        # Geocode addresses to (lat, lon) points
+        points_gdf, stats = geocode_dataframe(
+            df, address_column="address", delay=0.05, country_hint=country_hint
         )
-        
-        # Perform spatial join
-        joined = spatial_join_boundaries(point_gdf, boundaries)
-        
-        # Extract the result - use admin level fields from country config
-        if len(joined) > 0:
-            row = joined.iloc[0]
-            admin_levels = country_config['admin_levels']
-            
-            response_data = {
-                'success': True,
-                'latitude': lat,
-                'longitude': lon,
-                'admin1_pcode': row.get(admin_levels['level1']['pcode_field']),
-                'admin1_name': row.get(admin_levels['level1']['name_field']),
-                'admin1_label': admin_levels['level1']['label'],
-                'admin2_pcode': row.get(admin_levels['level2']['pcode_field']),
-                'admin2_name': row.get(admin_levels['level2']['name_field']),
-                'admin2_label': admin_levels['level2']['label'],
-                'country': country_config['name'],
-                'country_code': country_config['code']
-            }
-            return jsonify(response_data)
+
+        # Resolve P-codes per row via PostGIS
+        pcode_rows = []
+        for _, row in points_gdf.iterrows():
+            if row.geometry is None:
+                pcode_rows.append({})
+                continue
+            lat, lon = row.geometry.y, row.geometry.x
+            pcodes = resolve_pcodes(lat, lon, iso2=iso2) or {}
+            pcode_rows.append(pcodes)
+
+        pcode_df = pd.DataFrame(pcode_rows)
+        result_df = pd.concat(
+            [
+                pd.DataFrame(points_gdf.drop(columns="geometry")).reset_index(drop=True),
+                pcode_df.reset_index(drop=True),
+            ],
+            axis=1,
+        )
+
+        output = io.BytesIO()
+        output_format = request.form.get("format", "csv")
+        base_filename = (
+            output_filename.rsplit(".", 1)[0] if output_filename else "geocoded_addresses"
+        )
+
+        if output_format == "xlsx":
+            result_df.to_excel(output, index=False, engine="openpyxl")
+            mimetype = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            out_filename = f"{base_filename}.xlsx"
         else:
-            return jsonify({
-                'success': False,
-                'error': 'Could not match to administrative boundaries',
-                'latitude': lat,
-                'longitude': lon
-            })
-        
+            result_df.to_csv(output, index=False)
+            mimetype = "text/csv"
+            out_filename = f"{base_filename}.csv"
+
+        output.seek(0)
+        file_data = base64.b64encode(output.read()).decode("utf-8")
+
+        return jsonify({
+            "success": True,
+            "stats": stats,
+            "file_data": file_data,
+            "filename": out_filename,
+            "mimetype": mimetype,
+        })
+
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        return jsonify({"error": str(e)}), 500
 
-@app.route('/health')
-def health():
-    countries_loaded = list(boundaries_cache.keys())
-    return jsonify({
-        'status': 'ok', 
-        'countries_loaded': countries_loaded,
-        'available_countries': [c['code'] for c in get_all_countries()]
-    })
 
-@app.route('/countries')
-def countries():
-    """Get list of available countries with their configurations."""
+# ---------------------------------------------------------------------------
+# POST /geocode_single  -- single address lookup (public)
+# ---------------------------------------------------------------------------
+
+
+@app.route("/geocode_single", methods=["POST"])
+def geocode_single():
+    """Geocode a single address or coordinate string."""
     try:
-        countries_list = get_all_countries()
-        countries_data = []
-        
-        for country in countries_list:
-            config = get_country_config(country['key'])
-            countries_data.append({
-                'code': config['code'],
-                'name': config['name'],
-                'key': country['key'],
-                'map_center': config['map_center'],
-                'admin_levels': config['admin_levels']
-            })
-        
-        return jsonify(countries_data)
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        data = request.get_json() if request.is_json else request.form
+        address_input = data.get("address", "").strip()
+        iso2 = data.get("country", "").upper() or None
 
-if __name__ == '__main__':
-    # Pre-load default country boundaries
-    load_boundaries(DEFAULT_COUNTRY)
-    port = int(os.getenv('PORT', 5001))
-    app.run(debug=True, host='0.0.0.0', port=port)
+        if not address_input:
+            return jsonify({"error": "address is required"}), 400
+
+        result = geocode_address(address_input)
+        if not result:
+            return jsonify({"success": False, "error": "Could not geocode the address"})
+
+        lat, lon, confidence = result
+        pcodes = resolve_pcodes(lat, lon, iso2=iso2) or {}
+
+        return jsonify({
+            "success": True,
+            "address": address_input,
+            "latitude": lat,
+            "longitude": lon,
+            "confidence": confidence,
+            **pcodes,
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# POST /reverse_geocode  -- lat/lon to P-codes (public, used by map clicks)
+# ---------------------------------------------------------------------------
+
+
+@app.route("/reverse_geocode", methods=["POST"])
+def reverse_geocode():
+    """Resolve P-codes from a latitude/longitude coordinate."""
+    try:
+        data = request.get_json() if request.is_json else request.form
+        lat_raw = data.get("latitude") or data.get("lat")
+        lon_raw = data.get("longitude") or data.get("lon")
+        iso2 = data.get("country", "").upper() or None
+
+        if lat_raw is None or lon_raw is None:
+            return jsonify({"error": "latitude and longitude are required"}), 400
+
+        try:
+            lat = float(lat_raw)
+            lon = float(lon_raw)
+        except ValueError:
+            return jsonify({"error": "Invalid latitude or longitude"}), 400
+
+        pcodes = resolve_pcodes(lat, lon, iso2=iso2)
+        if not pcodes:
+            return jsonify({"success": False, "error": "Point outside known boundaries"})
+
+        return jsonify({"success": True, "latitude": lat, "longitude": lon, **pcodes})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Health check
+# ---------------------------------------------------------------------------
+
+
+@app.route("/health")
+def health():
+    try:
+        with get_db_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(DISTINCT iso2) FROM cod_adm")
+                country_count = cur.fetchone()[0]
+        return jsonify({"status": "ok", "countries_in_db": country_count})
+    except Exception as e:
+        return jsonify({"status": "degraded", "error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Cache invalidation (called after ingest)
+# ---------------------------------------------------------------------------
+
+
+@app.route("/api/cache/clear", methods=["POST"])
+@login_required
+def clear_cache():
+    """Invalidate the in-memory countries and boundaries caches after a data reload."""
+    with _cache_lock:
+        _countries_cache.clear()
+        _boundaries_cache.clear()
+    return jsonify({"status": "ok", "message": "Cache cleared"})
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
+
+if __name__ == "__main__":
+    check_db()
+    port = int(os.getenv("PORT", 5001))
+    app.run(debug=True, host="0.0.0.0", port=port)
