@@ -124,8 +124,8 @@ export function MapSection({ country, mapCenter, isVisible = true }: Props) {
 
         <Box style={{ position: 'relative', zIndex: 0 }}>
           <MapContainer
-            center={[10, 20]}
-            zoom={2}
+            center={mapCenter ? [mapCenter.lat, mapCenter.lon] : [10, 20]}
+            zoom={mapCenter?.zoom ?? 2}
             style={{ height: 400, width: '100%', borderRadius: 4, border: '1px solid #d1d5da' }}
           >
             <MapViewManager geojson={geojson} isVisible={isVisible} />

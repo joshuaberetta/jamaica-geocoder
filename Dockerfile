@@ -9,7 +9,7 @@ WORKDIR /app/frontend
 
 # Install npm deps first (layer cache)
 COPY frontend/package*.json ./
-RUN npm ci
+RUN npm install --prefer-offline
 
 # Copy source and build
 COPY frontend/ ./
@@ -72,6 +72,8 @@ COPY --from=frontend-build /app/static ./static/
 COPY --chown=appuser:appuser geocode.py .
 COPY --chown=appuser:appuser web_app.py .
 COPY --chown=appuser:appuser logos/ ./logos/
+COPY --chown=appuser:appuser scripts/ ./scripts/
+RUN chmod +x scripts/entrypoint.sh
 
 # Switch to non-root user
 USER appuser
@@ -83,5 +85,5 @@ EXPOSE 5000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:5000/health').read()"
 
-# Run the application
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--timeout", "300", "--workers", "1", "web_app:app"]
+# Run the application (ingest runs automatically on first start if the DB is empty)
+CMD ["sh", "scripts/entrypoint.sh"]
