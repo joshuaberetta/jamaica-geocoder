@@ -29,13 +29,47 @@ EOF
 echo "==> Rows in cod_adm: ${ROW_COUNT}"
 
 if [ "${ROW_COUNT}" = "0" ]; then
-    if [ -f "${DATA_FILE}" ]; then
-        echo "==> Running ingest from ${DATA_FILE}..."
-        python scripts/ingest.py --file "${DATA_FILE}"
-    else
-        echo "==> No local data file found. Downloading from HDX (this may take a while)..."
-        python scripts/ingest.py
+    if [ ! -f "${DATA_FILE}" ]; then
+        echo "==> No local data file found. Downloading from HDX to /data (this may take a while)..."
+        python - <<'PYEOF'
+import sys
+from pathlib import Path
+
+DEST = Path("/data/global_admin_boundaries_matched_latest.gdb.zip")
+DEST.parent.mkdir(parents=True, exist_ok=True)
+
+try:
+    from hdx.api.configuration import Configuration
+    from hdx.data.dataset import Dataset
+except ImportError:
+    sys.exit("ERROR: hdx-python-api is not installed.")
+
+Configuration.create(hdx_site="prod", user_agent="humanitarian-geocoder", hdx_read_only=True)
+print("Searching HDX for 'global-admin-boundaries'...")
+datasets = Dataset.search_in_hdx("global-admin-boundaries")
+resources = Dataset.get_all_resources(datasets)
+
+url = next((r["url"] for r in resources if r["name"] == DEST.name), None)
+if not url:
+    sys.exit(f"ERROR: Could not find {DEST.name} on HDX.")
+
+import requests
+print(f"Downloading {DEST.name} (~940 MB)...")
+with requests.get(url, stream=True, timeout=600) as r:
+    r.raise_for_status()
+    total = int(r.headers.get("content-length", 0))
+    downloaded = 0
+    with open(DEST, "wb") as f:
+        for chunk in r.iter_content(chunk_size=1024 * 1024):
+            f.write(chunk)
+            downloaded += len(chunk)
+            if total:
+                print(f"  {downloaded / total * 100:.1f}% ({downloaded // 1_000_000} MB)", end="\r", flush=True)
+print(f"\nDownload complete: {DEST}")
+PYEOF
     fi
+    echo "==> Running ingest from ${DATA_FILE}..."
+    python scripts/ingest.py --file "${DATA_FILE}"
     echo "==> Ingest complete."
 else
     echo "==> Database already populated, skipping ingest."
