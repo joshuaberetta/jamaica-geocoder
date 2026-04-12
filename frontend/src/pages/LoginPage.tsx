@@ -1,4 +1,4 @@
-import { Alert, Button, Center, Paper, PasswordInput, Stack, Text, TextInput, Title } from '@mantine/core';
+import { Alert, Button, Center, Paper, PasswordInput, Stack, Text, TextInput } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { useState } from 'react';
 import { KoboLogo } from '../components/KoboLogo';
@@ -45,19 +45,14 @@ export function LoginPage() {
   };
 
   return (
-    <Center style={{ minHeight: '100vh', background: '#f4f5f7', padding: 20 }}>
-      <Paper withBorder shadow="sm" p={48} radius="sm" style={{ maxWidth: 420, width: '100%' }}>
-        <Stack align="center" gap="xs" mb="xl">
-          <KoboLogo width={180} />
-          <Text size="xs" c="dimmed" fs="italic" style={{ letterSpacing: '0.5px' }}>
-            Where data meets purpose
-          </Text>
+    <Center style={{ minHeight: '100vh', background: '#f5f6f8', padding: 20 }}>
+      <Paper withBorder p={48} radius="md" style={{ maxWidth: 420, width: '100%', boxShadow: '0 1px 4px rgba(0,0,0,0.06)' }}>
+        <Stack align="center" gap={4} mb="xl">
+          <KoboLogo width={160} />
         </Stack>
 
-        <Title order={2} ta="center" mb={4} fw={500}>
-          Sign In
-        </Title>
-        <Text size="sm" c="dimmed" ta="center" mb="xl">
+        <Text fw={700} size="xl" c="#111827" mb={4}>Sign In</Text>
+        <Text size="sm" c="dimmed" mb="xl">
           Access batch geocoding features
         </Text>
 

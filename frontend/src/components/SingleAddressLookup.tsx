@@ -1,4 +1,4 @@
-import { Alert, Button, Group, Paper, Stack, TextInput } from '@mantine/core';
+import { Alert, Button, Group, Stack, TextInput } from '@mantine/core';
 import { useState } from 'react';
 import { geocodeSingle } from '../api/client';
 import type { PcodeResult } from '../api/types';
@@ -31,33 +31,31 @@ export function SingleAddressLookup({ country, onResult }: Props) {
   };
 
   return (
-    <Paper withBorder p="md" radius="sm">
-      <Stack gap="sm">
-        <Group gap="sm" align="flex-end">
-          <TextInput
-            style={{ flex: 1 }}
-            placeholder="Enter address or GPS coordinates (e.g. '18.0179, -76.8099')"
-            value={address}
-            onChange={(e) => setAddress(e.currentTarget.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleGeocode()}
-          />
-          <Button loading={loading} onClick={handleGeocode}>
-            Geocode
-          </Button>
-        </Group>
+    <Stack gap="sm">
+      <Group gap="sm" align="flex-end">
+        <TextInput
+          style={{ flex: 1 }}
+          placeholder="Enter address or GPS coordinates (e.g. '18.0179, -76.8099')"
+          value={address}
+          onChange={(e) => setAddress(e.currentTarget.value)}
+          onKeyDown={(e) => e.key === 'Enter' && handleGeocode()}
+        />
+        <Button loading={loading} onClick={handleGeocode}>
+          Geocode
+        </Button>
+      </Group>
 
-        {result && (
-          result.success ? (
-            <Alert color="green" variant="light">
-              <PcodeResultCard result={result} />
-            </Alert>
-          ) : (
-            <Alert color="red" variant="light">
-              {result.error ?? 'Failed to geocode address'}
-            </Alert>
-          )
-        )}
-      </Stack>
-    </Paper>
+      {result && (
+        result.success ? (
+          <Alert color="green" variant="light">
+            <PcodeResultCard result={result} />
+          </Alert>
+        ) : (
+          <Alert color="red" variant="light">
+            {result.error ?? 'Failed to geocode address'}
+          </Alert>
+        )
+      )}
+    </Stack>
   );
 }

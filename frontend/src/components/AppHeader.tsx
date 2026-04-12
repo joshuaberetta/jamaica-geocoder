@@ -1,4 +1,4 @@
-import { Button, Group, Stack, Text } from '@mantine/core';
+import { Button, Group, Text } from '@mantine/core';
 import { KoboLogo } from './KoboLogo';
 import { useAuth } from '../context/AuthContext';
 
@@ -9,25 +9,19 @@ export function AppHeader() {
     <Group
       justify="space-between"
       align="center"
-      px="md"
-      py="sm"
+      px="xl"
+      py="md"
       style={{
         background: '#fff',
-        boxShadow: '0 1px 3px rgba(0,0,0,0.1)',
-        marginBottom: 24,
+        borderBottom: '1px solid #e5e7eb',
       }}
     >
-      <Stack gap={4}>
-        <Group gap="sm">
-          <KoboLogo width={120} />
-          <Text size="sm" c="dimmed">
-            Humanitarian Geocoder
-          </Text>
-        </Group>
-        <Text size="xs" c="dimmed" fs="italic" style={{ letterSpacing: '0.3px' }}>
-          Where data meets purpose
+      <Group gap="sm" align="center">
+        <KoboLogo width={110} />
+        <Text size="sm" c="dimmed" fw={400}>
+          P-Code Lookup
         </Text>
-      </Stack>
+      </Group>
 
       {loggedIn ? (
         <Button

@@ -1,4 +1,4 @@
-import { Anchor, Container, Group, Stack, Tabs, Text } from '@mantine/core';
+import { Anchor, Container, Group, Paper, Stack, Tabs, Text } from '@mantine/core';
 import { useState } from 'react';
 import { AppHeader } from '../components/AppHeader';
 import { BatchUpload } from '../components/BatchUpload';
@@ -27,15 +27,16 @@ export function MainPage() {
   };
 
   return (
-    <div style={{ background: '#f4f5f7', minHeight: '100vh', paddingBottom: 40 }}>
+    <div style={{ background: '#f5f6f8', minHeight: '100vh', paddingBottom: 48 }}>
       <AppHeader />
 
-      <Container size="md">
-        <Stack gap="lg">
+      <Container size="md" pt="xl" pb="xl">
+        <Paper withBorder p="xl" radius="md" style={{ background: '#fff' }}>
+          <Stack gap="xl">
           <div>
-            <Text size="xl" fw={500} mb={4}>Humanitarian Geocoder</Text>
+            <Text size="xl" fw={700} c="#111827" mb={4}>Humanitarian Geocoder</Text>
             <Text size="sm" c="dimmed">
-              Select a country, then look up a single address, pick a point on the map, or process a batch file.
+              Enter a single address or upload a CSV file with addresses to geocode and match to administrative boundaries.
             </Text>
           </div>
 
@@ -67,7 +68,10 @@ export function MainPage() {
             </Tabs.Panel>
           </Tabs>
 
-          <Group justify="center" mt="md" style={{ borderTop: '1px solid #e8e8e8', paddingTop: 16 }}>
+          </Stack>
+        </Paper>
+
+        <Group justify="center" mt="lg" style={{ paddingTop: 8 }}>
             <Text size="xs" c="dimmed">
               <KoboFooterIcon />
               Built by{' '}
@@ -83,8 +87,7 @@ export function MainPage() {
                 Report an issue
               </Anchor>
             </Text>
-          </Group>
-        </Stack>
+        </Group>
       </Container>
     </div>
   );
