@@ -79,9 +79,33 @@ PYEOF
     echo "==> Running ingest from ${DATA_FILE}..."
     python scripts/ingest.py --file "${DATA_FILE}"
     echo "==> Ingest complete."
+    echo "==> Refreshing materialized view..."
+    python - <<'PYEOF'
+import os
+from sqlalchemy import create_engine, text
+engine = create_engine(os.environ["DATABASE_URL"])
+with engine.begin() as conn:
+    conn.execute(text("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_countries"))
+print("mv_countries refreshed.")
+PYEOF
 else
     echo "==> All admin levels 0-3 present, skipping ingest."
 fi
+
+echo "==> Ensuring materialized view is populated..."
+python - <<'PYEOF'
+import os
+from sqlalchemy import create_engine, text
+engine = create_engine(os.environ["DATABASE_URL"])
+with engine.begin() as conn:
+    count = conn.execute(text("SELECT COUNT(*) FROM mv_countries")).scalar()
+    if count == 0:
+        print("mv_countries is empty — refreshing...")
+        conn.execute(text("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_countries"))
+        print("mv_countries refreshed.")
+    else:
+        print(f"mv_countries OK ({count} countries).")
+PYEOF
 
 echo "==> Starting gunicorn..."
 exec gunicorn --bind 0.0.0.0:5000 --timeout 300 --workers 1 web_app:app
