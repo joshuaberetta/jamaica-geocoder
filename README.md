@@ -140,6 +140,221 @@ This application is designed to be deployed on a Linux server (e.g., DigitalOcea
     sudo certbot --nginx -d geocode.yourdomain.org
     ```
 
+## API Reference
+
+All endpoints return JSON. Endpoints marked **public** do not require authentication. Endpoints marked **auth required** require an active session (login first via the web UI or `POST /login`).
+
+### `GET /geocode` — public
+
+The simplest way to resolve P-codes. Accepts query parameters — no request body needed. Coordinates take priority over an address string; the `country` parameter is optional.
+
+**Query parameters:**
+
+| Param | Required | Description |
+|-------|----------|-------------|
+| `lat` / `latitude` | if no `address` | Decimal latitude |
+| `lon` / `longitude` | if no `address` | Decimal longitude |
+| `address` | if no `lat`/`lon` | Street address or `"lat, lon"` string |
+| `country` | no | Country key: `jamaica` or `mozambique` (default: `mozambique`) |
+
+**Examples:**
+```bash
+# Coordinate lookup (fastest — no geocoding API call)
+curl "https://your-domain/geocode?lat=17.9978&lon=-76.7936&country=jamaica"
+
+# Address lookup
+curl "https://your-domain/geocode?address=New+Kingston,+Jamaica&country=jamaica"
+```
+
+**Response (success):**
+```json
+{
+  "success": true,
+  "latitude": 17.9978,
+  "longitude": -76.7936,
+  "admin1_pcode": "JM-01",
+  "admin1_name": "Kingston",
+  "admin1_label": "Parish",
+  "admin2_pcode": "JM-0101",
+  "admin2_name": "New Kingston",
+  "admin2_label": "Community",
+  "country": "Jamaica",
+  "country_code": "JM"
+}
+```
+
+> Address lookups also include `address` and `confidence` fields in the response.
+
+---
+
+### `POST /geocode_single` — public
+
+Geocode a single address or GPS coordinate and return P-code data.
+
+**Request** (JSON or form):
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `address` | string | yes | Street address (e.g. `"123 Main St, Kingston"`) or GPS coordinates (e.g. `"18.1234, -77.5678"`) |
+| `country` | string | no | Country key: `jamaica` or `mozambique` (default: `mozambique`) |
+
+**Example:**
+```bash
+curl -X POST https://your-domain/geocode_single \
+  -H "Content-Type: application/json" \
+  -d '{"address": "New Kingston, Jamaica", "country": "jamaica"}'
+```
+
+**Response (success):**
+```json
+{
+  "success": true,
+  "address": "New Kingston, Jamaica",
+  "latitude": 17.9978,
+  "longitude": -76.7936,
+  "confidence": "high",
+  "admin1_pcode": "JM-01",
+  "admin1_name": "Kingston",
+  "admin1_label": "Parish",
+  "admin2_pcode": "JM-0101",
+  "admin2_name": "New Kingston",
+  "admin2_label": "Community",
+  "country": "Jamaica",
+  "country_code": "JM"
+}
+```
+
+---
+
+### `POST /reverse_geocode` — public
+
+Look up administrative P-codes for a known latitude/longitude.
+
+**Request** (JSON or form):
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `latitude` / `lat` | number | yes | Latitude in decimal degrees |
+| `longitude` / `lon` | number | yes | Longitude in decimal degrees |
+| `country` | string | no | Country key (default: `mozambique`) |
+
+**Example:**
+```bash
+curl -X POST https://your-domain/reverse_geocode \
+  -H "Content-Type: application/json" \
+  -d '{"lat": 17.9978, "lon": -76.7936, "country": "jamaica"}'
+```
+
+**Response (success):** Same shape as `/geocode_single` but without `address` and `confidence` fields.
+
+---
+
+### `POST /geocode` — auth required
+
+Batch geocode a CSV or Excel file. Returns the enriched file encoded as base64 JSON.
+
+**Request** (multipart form):
+
+| Field | Type | Required | Description |
+|-------|------|----------|-------------|
+| `file` | file | yes | CSV (semicolon-separated) or `.xlsx` file with an `address` column |
+| `country` | string | no | Country key (default: `mozambique`) |
+| `format` | string | no | Output format: `csv` (default) or `xlsx` |
+| `limit` | integer | no | Process only the first N rows |
+| `output_filename` | string | no | Base name for the downloaded file |
+| `admin1_names[]` | string (repeatable) | no | Filter spatial join to specific ADM1 names |
+
+**Response:**
+```json
+{
+  "success": true,
+  "stats": { "total": 100, "geocoded": 95, "failed": 5 },
+  "file_data": "<base64-encoded file>",
+  "filename": "geocoded_addresses.csv",
+  "mimetype": "text/csv"
+}
+```
+
+---
+
+### `GET /api/admin_levels` — public
+
+Return sorted ADM1 names for a country, useful for building filter dropdowns.
+
+**Query parameters:**
+
+| Param | Description |
+|-------|-------------|
+| `country` | Country key (default: `mozambique`) |
+
+**Example:**
+```bash
+curl "https://your-domain/api/admin_levels?country=jamaica"
+```
+
+**Response:**
+```json
+{
+  "country": "Jamaica",
+  "level": "admin1",
+  "label": "Parish",
+  "values": ["Clarendon", "Hanover", "Kingston", "..."]
+}
+```
+
+---
+
+### `GET /boundaries.geojson` — public
+
+Serve the administrative boundary GeoJSON for a country (WGS84). Supports `ETag` / `If-None-Match` caching and returns gzip-compressed data.
+
+**Query parameters:**
+
+| Param | Description |
+|-------|-------------|
+| `country` | Country key (default: `mozambique`) |
+
+**Example:**
+```bash
+curl "https://your-domain/boundaries.geojson?country=jamaica"
+```
+
+---
+
+### `GET /countries` — public
+
+List all supported countries with their configurations.
+
+**Response:**
+```json
+[
+  {
+    "code": "JM",
+    "name": "Jamaica",
+    "key": "jamaica",
+    "map_center": [18.1096, -77.2975],
+    "admin_levels": { "level1": { "label": "Parish", ... }, "level2": { ... } }
+  }
+]
+```
+
+---
+
+### `GET /health` — public
+
+Health check. Returns server status and which country boundary datasets are currently loaded.
+
+**Response:**
+```json
+{
+  "status": "ok",
+  "countries_loaded": ["JM"],
+  "available_countries": ["JM", "MZ"]
+}
+```
+
+---
+
 ## Development History & Improvements
 
 - **Geocoding Success Rate**: Improved from ~20% to >90% for difficult addresses through smarter parsing and coordinate detection.

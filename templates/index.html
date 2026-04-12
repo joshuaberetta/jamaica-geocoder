@@ -810,6 +810,25 @@
             </select>
         </div>
         
+        <!-- Province Filter (Admin1 Level) -->
+        <div id="provinceFilterContainer" style="margin-bottom: 24px; padding: 16px; background: #f8f9fa; border-radius: 4px; border: 1px solid #e1e4e8; display: none;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;">
+                <label for="provinceSelect" style="font-weight: 600; color: #2c3e50; margin: 0;">
+                    Filter by <span id="provinceLevelLabel">Province</span>:
+                </label>
+                <div style="display: flex; gap: 8px;">
+                    <button type="button" id="selectAllProvinces" style="padding: 4px 8px; font-size: 12px; background: #0366d6; color: white; border: none; border-radius: 3px; cursor: pointer;">Select All</button>
+                    <button type="button" id="deselectAllProvinces" style="padding: 4px 8px; font-size: 12px; background: #6c757d; color: white; border: none; border-radius: 3px; cursor: pointer;">Deselect All</button>
+                </div>
+            </div>
+            <select id="provinceSelect" multiple style="width: 100%; min-height: 120px; padding: 8px; border: 1px solid #d1d5da; border-radius: 3px; font-size: 14px; background: white;">
+                <!-- Options populated dynamically -->
+            </select>
+            <div style="margin-top: 8px; font-size: 12px; color: #586069;">
+                <span id="provinceFilterStatus">All provinces selected (no filtering)</span>
+            </div>
+        </div>
+        
         <!-- Single Address Input Section -->
         <div class="single-address-section">
             <h2>Single Address Lookup</h2>
@@ -1259,6 +1278,83 @@
             console.log('DOM loaded, initializing app...');
             console.log('URL Search Params:', window.location.search);
             
+            // Get province filter elements
+            const provinceFilterContainer = document.getElementById('provinceFilterContainer');
+            const provinceSelect = document.getElementById('provinceSelect');
+            const provinceLevelLabel = document.getElementById('provinceLevelLabel');
+            const provinceFilterStatus = document.getElementById('provinceFilterStatus');
+            const selectAllProvincesBtn = document.getElementById('selectAllProvinces');
+            const deselectAllProvincesBtn = document.getElementById('deselectAllProvinces');
+            
+            // Function to load and populate provinces for current country
+            async function loadProvinces(country) {
+                try {
+                    const response = await fetch(`/api/admin_levels?country=${country}`);
+                    if (!response.ok) {
+                        throw new Error('Failed to load admin levels');
+                    }
+                    
+                    const data = await response.json();
+                    
+                    // Update label
+                    provinceLevelLabel.textContent = data.label || 'Province';
+                    
+                    // Clear existing options
+                    provinceSelect.innerHTML = '';
+                    
+                    // Add all provinces as options
+                    data.values.forEach(province => {
+                        const option = document.createElement('option');
+                        option.value = province;
+                        option.textContent = province;
+                        option.selected = true; // Select all by default
+                        provinceSelect.appendChild(option);
+                    });
+                    
+                    // Show the filter container
+                    provinceFilterContainer.style.display = 'block';
+                    
+                    // Update status
+                    updateProvinceFilterStatus();
+                    
+                } catch (error) {
+                    console.error('Error loading provinces:', error);
+                    // Hide filter on error
+                    provinceFilterContainer.style.display = 'none';
+                }
+            }
+            
+            // Function to update filter status text
+            function updateProvinceFilterStatus() {
+                const selected = Array.from(provinceSelect.selectedOptions);
+                const total = provinceSelect.options.length;
+                
+                if (selected.length === 0) {
+                    provinceFilterStatus.textContent = 'No provinces selected (results will be empty)';
+                    provinceFilterStatus.style.color = '#d73a49';
+                } else if (selected.length === total) {
+                    provinceFilterStatus.textContent = 'All provinces selected (no filtering)';
+                    provinceFilterStatus.style.color = '#586069';
+                } else {
+                    provinceFilterStatus.textContent = `${selected.length} of ${total} provinces selected: ${selected.map(o => o.value).join(', ')}`;
+                    provinceFilterStatus.style.color = '#0366d6';
+                }
+            }
+            
+            // Select/Deselect all buttons
+            selectAllProvincesBtn.addEventListener('click', () => {
+                Array.from(provinceSelect.options).forEach(option => option.selected = true);
+                updateProvinceFilterStatus();
+            });
+            
+            deselectAllProvincesBtn.addEventListener('click', () => {
+                Array.from(provinceSelect.options).forEach(option => option.selected = false);
+                updateProvinceFilterStatus();
+            });
+            
+            // Update status when selection changes
+            provinceSelect.addEventListener('change', updateProvinceFilterStatus);
+            
             // Handle Cache Clearing
             const clearCacheBtn = document.getElementById('clearCacheBtn');
             if (clearCacheBtn) {
@@ -1344,6 +1440,9 @@
                 
                 // Now load boundaries
                 loadBoundaries(currentCountry);
+                
+                // Load provinces for the current country
+                loadProvinces(currentCountry);
 
                 // Check for address parameter in URL and trigger lookup
                 const addressParam = urlParams.get('address');
@@ -1382,6 +1481,9 @@
                 
                 centerMapOnCountry(currentCountry);
                 loadBoundaries(currentCountry);
+                
+                // Reload provinces for new country
+                loadProvinces(currentCountry);
             });
         });
         
@@ -1580,6 +1682,15 @@
             const formData = new FormData(uploadForm);
             // Add selected country to form data
             formData.append('country', currentCountry);
+            
+            // Add selected provinces to form data
+            const provinceSelect = document.getElementById('provinceSelect');
+            if (provinceSelect) {
+                const selectedProvinces = Array.from(provinceSelect.selectedOptions).map(option => option.value);
+                selectedProvinces.forEach(province => {
+                    formData.append('admin1_names[]', province);
+                });
+            }
             
             // Show progress
             progress.style.display = 'block';

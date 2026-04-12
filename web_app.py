@@ -144,6 +144,9 @@ def geocode():
         country = request.form.get('country', DEFAULT_COUNTRY)
         country_config = get_country_config(country)
         
+        # Get admin1 (province) filter if provided
+        admin1_filter = request.form.getlist('admin1_names[]')
+        
         # Check if this is a single address request
         if request.is_json or request.form.get('single_address'):
             return geocode_single()
@@ -203,6 +206,17 @@ def geocode():
         if boundaries is None:
             return jsonify({'error': f'Boundary data not available for {country_config["name"]}'}), 500
         
+        # Filter boundaries by admin1 (province) if specified
+        admin1_filter = request.form.getlist('admin1_names[]')
+        if admin1_filter and len(admin1_filter) > 0:
+            admin1_config = country_config.get('admin_levels', {}).get('level1', {})
+            admin1_name_field = admin1_config.get('name_field', 'adm1_name')
+            
+            if admin1_name_field in boundaries.columns:
+                boundaries = boundaries[boundaries[admin1_name_field].isin(admin1_filter)].copy()
+                print(f"Filtered boundaries to {len(admin1_filter)} provinces: {', '.join(admin1_filter)}")
+                print(f"Boundary features after filtering: {len(boundaries)}")
+        
         # Geocode addresses - use minimal delay to avoid timeout
         points_gdf, stats = geocode_dataframe(df, address_column='address', delay=0.05, country_config=country_config)
         
@@ -251,6 +265,116 @@ def geocode():
         
     except Exception as e:
         return jsonify({'error': str(e)}), 500
+
+@app.route('/geocode', methods=['GET'])
+def geocode_get():
+    """GET endpoint: resolve pcodes from coordinates or address via query parameters (public endpoint).
+
+    Priority: coordinates (lat/lon) are used directly if provided; address is geocoded as a fallback.
+
+    Query parameters:
+        lat / latitude  -- decimal latitude
+        lon / longitude -- decimal longitude
+        address         -- street address or 'lat, lon' string
+        country         -- country key (optional, defaults to DEFAULT_COUNTRY)
+    """
+    try:
+        lat_raw = request.args.get('lat') or request.args.get('latitude')
+        lon_raw = request.args.get('lon') or request.args.get('longitude')
+        address_input = request.args.get('address', '').strip()
+        country = request.args.get('country', DEFAULT_COUNTRY)
+
+        country_config = get_country_config(country)
+        boundaries = load_boundaries(country)
+        if boundaries is None:
+            return jsonify({'error': f'Boundary data not available for {country_config["name"]}'}), 500
+
+        # --- coordinate path (priority) ---
+        if lat_raw is not None and lon_raw is not None:
+            try:
+                lat = float(lat_raw)
+                lon = float(lon_raw)
+            except ValueError:
+                return jsonify({'error': 'Invalid latitude or longitude format'}), 400
+
+            point = Point(lon, lat)
+            point_gdf = gpd.GeoDataFrame(
+                {'latitude': [lat], 'longitude': [lon]},
+                geometry=[point],
+                crs='EPSG:4326'
+            )
+            joined = spatial_join_boundaries(point_gdf, boundaries)
+            if len(joined) > 0:
+                row = joined.iloc[0]
+                admin_levels = country_config['admin_levels']
+                return jsonify({
+                    'success': True,
+                    'latitude': lat,
+                    'longitude': lon,
+                    'admin1_pcode': row.get(admin_levels['level1']['pcode_field']),
+                    'admin1_name': row.get(admin_levels['level1']['name_field']),
+                    'admin1_label': admin_levels['level1']['label'],
+                    'admin2_pcode': row.get(admin_levels['level2']['pcode_field']),
+                    'admin2_name': row.get(admin_levels['level2']['name_field']),
+                    'admin2_label': admin_levels['level2']['label'],
+                    'country': country_config['name'],
+                    'country_code': country_config['code']
+                })
+            else:
+                return jsonify({
+                    'success': False,
+                    'error': 'Could not match to administrative boundaries',
+                    'latitude': lat,
+                    'longitude': lon
+                })
+
+        # --- address path ---
+        if not address_input:
+            return jsonify({'error': 'Provide lat & lon query parameters, or an address parameter'}), 400
+
+        result = geocode_address(address_input, country_config)
+        if result is None:
+            return jsonify({'success': False, 'error': 'Could not geocode the address', 'address': address_input})
+
+        lat, lon, confidence = result
+        point = Point(lon, lat)
+        point_gdf = gpd.GeoDataFrame(
+            {'address': [address_input], 'latitude': [lat], 'longitude': [lon], 'confidence': [confidence]},
+            geometry=[point],
+            crs='EPSG:4326'
+        )
+        joined = spatial_join_boundaries(point_gdf, boundaries)
+        if len(joined) > 0:
+            row = joined.iloc[0]
+            admin_levels = country_config['admin_levels']
+            return jsonify({
+                'success': True,
+                'address': address_input,
+                'latitude': lat,
+                'longitude': lon,
+                'confidence': confidence,
+                'admin1_pcode': row.get(admin_levels['level1']['pcode_field']),
+                'admin1_name': row.get(admin_levels['level1']['name_field']),
+                'admin1_label': admin_levels['level1']['label'],
+                'admin2_pcode': row.get(admin_levels['level2']['pcode_field']),
+                'admin2_name': row.get(admin_levels['level2']['name_field']),
+                'admin2_label': admin_levels['level2']['label'],
+                'country': country_config['name'],
+                'country_code': country_config['code']
+            })
+        else:
+            return jsonify({
+                'success': False,
+                'error': 'Could not match to administrative boundaries',
+                'address': address_input,
+                'latitude': lat,
+                'longitude': lon,
+                'confidence': confidence
+            })
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
 
 @app.route('/geocode_single', methods=['POST'])
 def geocode_single():
@@ -325,6 +449,39 @@ def geocode_single():
                 'confidence': confidence
             })
         
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin_levels')
+def get_admin_levels():
+    """Get list of admin1 (province) names for a country."""
+    try:
+        country = request.args.get('country', DEFAULT_COUNTRY)
+        country_config = get_country_config(country)
+        
+        # Load boundaries if not already loaded
+        gdf = load_boundaries(country)
+        
+        if gdf is None:
+            return jsonify({'error': 'Boundaries not found'}), 404
+        
+        # Get admin1 level configuration
+        admin1_config = country_config.get('admin_levels', {}).get('level1', {})
+        admin1_name_field = admin1_config.get('name_field', 'adm1_name')
+        
+        if admin1_name_field not in gdf.columns:
+            return jsonify({'error': f'Admin level field {admin1_name_field} not found'}), 400
+        
+        # Get unique admin1 names, sorted
+        admin1_names = sorted(gdf[admin1_name_field].dropna().unique().tolist())
+        
+        return jsonify({
+            'country': country_config['name'],
+            'level': 'admin1',
+            'label': admin1_config.get('label', 'Province'),
+            'values': admin1_names
+        })
+    
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
