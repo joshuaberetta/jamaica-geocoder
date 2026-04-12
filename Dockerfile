@@ -75,6 +75,9 @@ COPY --chown=appuser:appuser logos/ ./logos/
 COPY --chown=appuser:appuser scripts/ ./scripts/
 RUN chmod +x scripts/entrypoint.sh
 
+# Create data directory for boundary files (can be bind-mounted from host)
+RUN mkdir -p /data && chown appuser:appuser /data
+
 # Switch to non-root user
 USER appuser
 

@@ -32,11 +32,11 @@ if [ "${ROW_COUNT}" = "0" ]; then
     if [ -f "${DATA_FILE}" ]; then
         echo "==> Running ingest from ${DATA_FILE}..."
         python scripts/ingest.py --file "${DATA_FILE}"
-        echo "==> Ingest complete."
     else
-        echo "==> WARNING: No data file found at ${DATA_FILE} and database is empty."
-        echo "==> Skipping ingest. Mount a data volume or set DATABASE_URL to a pre-loaded DB."
+        echo "==> No local data file found. Downloading from HDX (this may take a while)..."
+        python scripts/ingest.py
     fi
+    echo "==> Ingest complete."
 else
     echo "==> Database already populated, skipping ingest."
 fi

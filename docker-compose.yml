@@ -35,7 +35,7 @@ services:
       db:
         condition: service_healthy
     volumes:
-      - ./data:/data:ro
+      - geodata:/data
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health').read()"]
@@ -48,6 +48,7 @@ services:
 
 volumes:
   pgdata:
+  geodata:
 
 networks:
   geocoder-network:
