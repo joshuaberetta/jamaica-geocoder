@@ -387,76 +387,132 @@ def ingest_global_layer(file_path: str, layer_name: str,
                         country_filter: str | None = None) -> int:
     """
     Ingest one layer from the global matched GDB format (admin0, admin1, …).
-    Each layer contains all countries; country is identified by an ISO field.
-    Rows are grouped by country and inserted with delete-then-insert per (iso2, adm_level).
+    Streams features via fiona one-by-one and groups by country to avoid
+    loading the entire global layer into memory at once.
     """
     m = GLOBAL_LAYER_RE.match(layer_name)
     if not m:
         return 0
     adm_level = int(m.group(1))
 
-    print(f"\nReading {layer_name} (ADM{adm_level}) — this may take a while...")
-    gdf = gpd.read_file(file_path, layer=layer_name)
-    gdf = gdf.to_crs("EPSG:4326")
+    print(f"\nStreaming {layer_name} (ADM{adm_level}) by country...")
 
-    cols = list(gdf.columns)
-    iso3_col = _find_col(cols, ISO3_FIELD_CANDIDATES)
-    iso2_col = _find_col(cols, ISO2_FIELD_CANDIDATES)
+    import fiona
+    from pyproj import CRS, Transformer
+    from shapely.geometry import shape
 
-    if not iso3_col and not iso2_col:
-        print(f"  SKIP {layer_name}: no ISO country code column found.")
-        print(f"  Available columns: {cols}")
-        return 0
+    with fiona.open(file_path, layer=layer_name) as src:
+        native_crs = CRS(src.crs)
+        need_transform = not native_crs.equals(CRS("EPSG:4326"))
+        transformer = (
+            Transformer.from_crs(native_crs, CRS("EPSG:4326"), always_xy=True)
+            if need_transform else None
+        )
 
-    id_col = iso3_col or iso2_col
-    all_iso_vals = sorted(gdf[id_col].dropna().unique())
+        cols = list(src.schema["properties"].keys())
+        iso3_col = _find_col(cols, ISO3_FIELD_CANDIDATES)
+        iso2_col = _find_col(cols, ISO2_FIELD_CANDIDATES)
 
-    # Apply country filter
-    if country_filter:
-        cf = country_filter.upper()
-        all_iso_vals = [
-            v for v in all_iso_vals
-            if v.upper() == cf
-            or iso3_to_iso2(v.upper()) == cf
-            or (iso2_col and gdf.loc[gdf[id_col] == v, iso2_col].iloc[0].upper() == cf
-                if iso2_col else False)
-        ]
-        if not all_iso_vals:
-            print(f"  No rows found for country filter '{country_filter}'")
+        if not iso3_col and not iso2_col:
+            print(f"  SKIP {layer_name}: no ISO country code column found.")
+            print(f"  Available columns: {cols}")
             return 0
 
-    # Normalize column names once for the whole layer
-    col_map = normalize_columns(gdf, "")  # no iso3-specific overrides at this stage
-    gdf = gdf.rename(columns=col_map)
-    # Refresh id_col name after rename (it won't have changed — ISO cols don't match adm regex)
+        id_col = iso3_col or iso2_col
+        col_map = normalize_columns(
+            gpd.GeoDataFrame(columns=cols + ["geometry"]), ""
+        )
+
+        # Build a column rename mapping for property keys
+        prop_map: dict[str, str] = {}
+        for c in cols:
+            import re as _re
+            m2 = PCODE_RE.match(c)
+            if m2:
+                prop_map[c] = f"adm{m2.group(1)}_pcode"
+                continue
+            m2 = NAME_RE.match(c)
+            if m2:
+                prop_map[c] = f"adm{m2.group(1)}_name"
+
+        cf = country_filter.upper() if country_filter else None
+
+        # Stream once, bucket features by ISO value (store as dicts, not GeoDataFrames)
+        buckets: dict[str, list[dict]] = {}
+
+        for feat in src:
+            props = feat["properties"]
+            iso_val = props.get(id_col)
+            if not iso_val:
+                continue
+            iso_val_u = iso_val.upper()
+
+            if cf:
+                iso3_match = iso_val_u == cf if iso3_col else False
+                iso2_match = iso3_to_iso2(iso_val_u) == cf if iso3_col else iso_val_u == cf
+                if not (iso3_match or iso2_match):
+                    continue
+
+            geom_raw = feat.get("geometry")
+            if not geom_raw:
+                continue
+            try:
+                geom = shape(geom_raw)
+                if transformer:
+                    from shapely.ops import transform as shp_transform
+                    geom = shp_transform(transformer.transform, geom)
+                if geom.is_empty:
+                    continue
+                if geom.geom_type != "MultiPolygon":
+                    geom = MultiPolygon([geom])
+            except Exception:
+                continue
+
+            normalized: dict = {}
+            for k, v in props.items():
+                normalized[prop_map.get(k, k)] = v
+
+            if iso_val_u not in buckets:
+                buckets[iso_val_u] = []
+            buckets[iso_val_u].append({"props": normalized, "geom": geom, "id_val": iso_val})
 
     total = 0
-    for iso_val in all_iso_vals:
-        iso_val_u = iso_val.upper()
-
+    for iso_val_u, feats in sorted(buckets.items()):
         if iso3_col:
             iso3 = iso_val_u
             iso2 = iso3_to_iso2(iso3)
             if not iso2 and iso2_col:
-                matches = gdf.loc[gdf[id_col] == iso_val, iso2_col].dropna()
-                iso2 = matches.iloc[0].upper() if not matches.empty else None
+                iso2 = feats[0]["props"].get(iso2_col, "").upper() or None
         else:
             iso2 = iso_val_u
             iso3 = next((k for k, v in ISO3_TO_ISO2.items() if v == iso2), iso2)
 
         if not iso2:
-            print(f"  SKIP {iso_val}: no ISO2 mapping")
+            print(f"  SKIP {iso_val_u}: no ISO2 mapping")
             continue
 
-        group = gdf[gdf[id_col] == iso_val].copy()
-
         country_name = None
-        if "adm0_name" in group.columns:
-            vals = group["adm0_name"].dropna().unique()
-            if vals.size:
-                country_name = str(vals[0])
+        for f in feats:
+            cn = f["props"].get("adm0_name")
+            if cn:
+                country_name = str(cn)
+                break
 
-        rows = _build_rows(group, iso2, iso3, country_name, adm_level)
+        rows = []
+        for f in feats:
+            geom = f["geom"]
+            row: dict = {
+                "iso2": iso2,
+                "iso3": iso3,
+                "country_name": country_name,
+                "adm_level": adm_level,
+                "geom": geom.wkt,
+            }
+            for n in range(5):
+                row[f"adm{n}_pcode"] = f["props"].get(f"adm{n}_pcode")
+                row[f"adm{n}_name"] = f["props"].get(f"adm{n}_name")
+            rows.append(row)
+
         if not rows:
             continue
 

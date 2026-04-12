@@ -5,8 +5,8 @@ services:
       POSTGRES_DB: geocode
       POSTGRES_USER: geocode
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-    ports:
-      - "5432:5432"
+    # Port 5432 intentionally not exposed — only accessible within the Docker network.
+    # To connect locally for debugging: docker compose exec db psql -U geocode
     volumes:
       - pgdata:/var/lib/postgresql/data
       - ./db/schema.sql:/docker-entrypoint-initdb.d/schema.sql

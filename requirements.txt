@@ -2,6 +2,7 @@ requests
 pandas
 geopandas
 shapely
+pyproj
 python-dotenv
 openpyxl
 flask

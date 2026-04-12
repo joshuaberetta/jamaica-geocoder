@@ -18,17 +18,25 @@ if not url:
 try:
     engine = create_engine(url)
     with engine.connect() as conn:
-        result = conn.execute(text("SELECT COUNT(*) FROM cod_adm"))
-        print(result.scalar())
+        # Require admin levels 0, 1, 2, and 3 to all be present.
+        # If any are missing the ingest was incomplete and must be re-run.
+        result = conn.execute(text(
+            "SELECT COUNT(*) FROM cod_adm WHERE adm_level IN (0,1,2,3) "
+            "AND adm_level IN (SELECT DISTINCT adm_level FROM cod_adm)"
+        ))
+        level_count = conn.execute(text(
+            "SELECT COUNT(DISTINCT adm_level) FROM cod_adm WHERE adm_level IN (0,1,2,3)"
+        )).scalar()
+        print(level_count)
 except Exception as e:
     print(f"DB check failed: {e}", file=sys.stderr)
     print("0")
 EOF
 )
 
-echo "==> Rows in cod_adm: ${ROW_COUNT}"
+echo "==> Distinct admin levels (0-3) in cod_adm: ${ROW_COUNT}"
 
-if [ "${ROW_COUNT}" = "0" ]; then
+if [ "${ROW_COUNT}" != "4" ]; then
     if [ ! -f "${DATA_FILE}" ]; then
         echo "==> No local data file found. Downloading from HDX to /data (this may take a while)..."
         python - <<'PYEOF'
@@ -72,7 +80,7 @@ PYEOF
     python scripts/ingest.py --file "${DATA_FILE}"
     echo "==> Ingest complete."
 else
-    echo "==> Database already populated, skipping ingest."
+    echo "==> All admin levels 0-3 present, skipping ingest."
 fi
 
 echo "==> Starting gunicorn..."
