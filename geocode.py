@@ -115,7 +115,8 @@ def resolve_pcodes(
         "country": row["country_name"],
         "country_code": row["iso2"],
     }
-    for n in range(5):
+    max_level = row["adm_level"]
+    for n in range(max_level + 1):
         pcode = row.get(f"adm{n}_pcode")
         name = row.get(f"adm{n}_name")
         if pcode:

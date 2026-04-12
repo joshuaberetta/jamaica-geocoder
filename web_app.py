@@ -535,12 +535,30 @@ def geocode_single():
         if not address_input:
             return jsonify({"error": "address is required"}), 400
 
-        result = geocode_address(address_input)
+        # Look up country name to use as a geocoding hint (improves disambiguation).
+        country_hint = None
+        if iso2:
+            try:
+                with get_db_conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT country_name FROM mv_countries WHERE iso2 = %s LIMIT 1",
+                            (iso2,),
+                        )
+                        row = cur.fetchone()
+                        if row:
+                            country_hint = row[0]
+            except Exception:
+                pass
+
+        result = geocode_address(address_input, country_hint=country_hint)
         if not result:
             return jsonify({"success": False, "error": "Could not geocode the address"})
 
         lat, lon, confidence = result
-        pcodes = resolve_pcodes(lat, lon, iso2=iso2) or {}
+        # Resolve pcodes from actual coordinates without country filter — the
+        # geocoded location already determines the country.
+        pcodes = resolve_pcodes(lat, lon) or {}
 
         return jsonify({
             "success": True,
