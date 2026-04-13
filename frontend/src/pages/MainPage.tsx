@@ -19,7 +19,7 @@ function KoboFooterIcon() {
 export function MainPage() {
   const [selectedCountry, setSelectedCountry] = useState<Country | null>(null);
   const [mapCenter, setMapCenter] = useState<{ lat: number; lon: number; zoom: number } | null>(null);
-  const [activeTab, setActiveTab] = useState<string>('single');
+  const [activeTab, setActiveTab] = useState<string>('map');
 
   const handleCountryChange = (country: Country | null) => {
     setSelectedCountry(country);
@@ -44,8 +44,8 @@ export function MainPage() {
 
           <Tabs value={activeTab} onChange={(v) => v && setActiveTab(v)} variant="outline">
             <Tabs.List>
-              <Tabs.Tab value="single">Single Lookup</Tabs.Tab>
               <Tabs.Tab value="map">Map Picker</Tabs.Tab>
+              <Tabs.Tab value="single">Single Lookup</Tabs.Tab>
               <Tabs.Tab value="batch">Batch Processing</Tabs.Tab>
             </Tabs.List>
 
