@@ -40,8 +40,6 @@ export function MainPage() {
             </Text>
           </div>
 
-          <CountrySelect value={selectedCountry?.code ?? null} onChange={handleCountryChange} />
-
           <Tabs value={activeTab} onChange={(v) => v && setActiveTab(v)} variant="outline">
             <Tabs.List>
               <Tabs.Tab value="map">Map Picker</Tabs.Tab>
@@ -50,21 +48,24 @@ export function MainPage() {
             </Tabs.List>
 
             <Tabs.Panel value="single" pt="md">
-              <SingleAddressLookup country={selectedCountry?.code ?? null} />
+              <SingleAddressLookup country={null} />
             </Tabs.Panel>
 
             {/* MapSection rendered outside Tabs.Panel so it is never unmounted — Leaflet
                 errors when its container DOM node is reused after being destroyed. */}
             <div style={{ display: activeTab === 'map' ? 'block' : 'none', paddingTop: 16 }}>
-              <MapSection
-                country={selectedCountry?.code ?? null}
-                mapCenter={mapCenter}
-                isVisible={activeTab === 'map'}
-              />
+              <CountrySelect value={selectedCountry?.code ?? null} onChange={handleCountryChange} />
+              <div style={{ marginTop: 16 }}>
+                <MapSection
+                  country={selectedCountry?.code ?? null}
+                  mapCenter={mapCenter}
+                  isVisible={activeTab === 'map'}
+                />
+              </div>
             </div>
 
             <Tabs.Panel value="batch" pt="md">
-              <BatchUpload country={selectedCountry?.code ?? null} />
+              <BatchUpload country={null} />
             </Tabs.Panel>
           </Tabs>
 
