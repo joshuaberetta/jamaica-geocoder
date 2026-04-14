@@ -1,5 +1,5 @@
 import { Alert, Box, Loader, Overlay, Paper, Select, Stack, Text } from '@mantine/core';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { MapContainer, TileLayer, GeoJSON, Marker, useMapEvents, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import type { FeatureCollection } from 'geojson';
@@ -33,7 +33,7 @@ interface ClickHandlerProps {
  * deferred via requestAnimationFrame so the browser has had a chance to
  * apply the new container dimensions after display:none → display:block.
  */
-function MapViewManager({ geojson, isVisible }: { geojson: FeatureCollection | null; isVisible: boolean }) {
+function MapViewManager({ geojson, isVisible, onFitDone }: { geojson: FeatureCollection | null; isVisible: boolean; onFitDone: () => void }) {
   const map = useMap();
   useEffect(() => {
     if (!isVisible) return;
@@ -42,13 +42,14 @@ function MapViewManager({ geojson, isVisible }: { geojson: FeatureCollection | n
     const raf = requestAnimationFrame(() => {
       try {
         const bounds = L.geoJSON(geojson).getBounds();
-        if (bounds.isValid()) map.fitBounds(bounds, { padding: [20, 20] });
+        if (bounds.isValid()) map.fitBounds(bounds, { animate: false, padding: [20, 20] });
       } catch {
         // ignore malformed geometries
       }
+      onFitDone();
     });
     return () => cancelAnimationFrame(raf);
-  }, [geojson, isVisible, map]);
+  }, [geojson, isVisible, map, onFitDone]);
   return null;
 }
 
@@ -71,8 +72,10 @@ export function MapSection({ country, mapCenter, isVisible = true }: Props) {
   const levels = useAvailableLevels(country);
   const [selectedLevel, setSelectedLevel] = useState<number>(2);
   const [geojson, setGeojson] = useState<FeatureCollection | null>(null);
-  const [loadingBoundary, setLoadingBoundary] = useState(false);
+  const [overlayVisible, setOverlayVisible] = useState(false);
   const [markerPos, setMarkerPos] = useState<[number, number] | null>(null);
+
+  const handleFitDone = useCallback(() => setOverlayVisible(false), []);
   const [result, setResult] = useState<PcodeResult | null>(null);
 
   // Pick a sensible default level when the available levels for a country load.
@@ -87,14 +90,21 @@ export function MapSection({ country, mapCenter, isVisible = true }: Props) {
   // Uses AbortController so stale in-flight requests are cancelled when deps change.
   useEffect(() => {
     setGeojson(null);
-    if (!country) return;
+    if (!country) {
+      setOverlayVisible(false);
+      return;
+    }
     const controller = new AbortController();
-    setLoadingBoundary(true);
+    setOverlayVisible(true);
     fetch(`/boundaries.geojson?country=${country}&level=${selectedLevel}`, { signal: controller.signal })
       .then((r) => r.ok ? r.json() : null)
       .then((data) => { if (!controller.signal.aborted) setGeojson(data); })
-      .catch((err) => { if (err.name !== 'AbortError') setGeojson(null); })
-      .finally(() => { if (!controller.signal.aborted) setLoadingBoundary(false); });
+      .catch((err) => {
+        if (err.name !== 'AbortError') {
+          setGeojson(null);
+          setOverlayVisible(false);
+        }
+      });
     return () => controller.abort();
   }, [country, selectedLevel]);
 
@@ -128,7 +138,7 @@ export function MapSection({ country, mapCenter, isVisible = true }: Props) {
             zoom={mapCenter?.zoom ?? 2}
             style={{ height: 400, width: '100%', borderRadius: 4, border: '1px solid #d1d5da' }}
           >
-            <MapViewManager geojson={geojson} isVisible={isVisible} />
+            <MapViewManager geojson={geojson} isVisible={isVisible} onFitDone={handleFitDone} />
             <TileLayer
               url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
               attribution="&copy; OpenStreetMap contributors"
@@ -145,7 +155,7 @@ export function MapSection({ country, mapCenter, isVisible = true }: Props) {
             <ClickHandler country={country} onResult={handleMapClick} />
           </MapContainer>
 
-          {loadingBoundary && (
+          {overlayVisible && (
             <Overlay
               style={{ borderRadius: 4, display: 'flex', flexDirection: 'column', gap: 12, alignItems: 'center', justifyContent: 'center' }}
               blur={2}
