@@ -259,10 +259,12 @@ def ingest_layer(file_path: str, layer_name: str, iso3_override: str | None = No
     gdf = gpd.read_file(file_path, layer=layer_name)
     gdf = gdf.to_crs("EPSG:4326")
 
-    # Cast Polygon → MultiPolygon to match schema
+    # Cast Polygon → MultiPolygon to match schema; force 2D to strip any Z coordinates
     def to_multi(geom):
         if geom is None:
             return None
+        from shapely.ops import transform
+        geom = transform(lambda x, y, *args: (x, y), geom)  # drop Z
         return geom if geom.geom_type == "MultiPolygon" else MultiPolygon([geom])
 
     gdf["geometry"] = gdf["geometry"].apply(to_multi)
@@ -475,6 +477,10 @@ def ingest_global_layer(file_path: str, layer_name: str,
                 if transformer:
                     from shapely.ops import transform as shp_transform
                     geom = shp_transform(transformer.transform, geom)
+                # Strip Z dimension if present
+                if geom.has_z:
+                    from shapely.ops import transform as shp_transform2
+                    geom = shp_transform2(lambda x, y, *args: (x, y), geom)
                 if geom.is_empty:
                     continue
                 if geom.geom_type != "MultiPolygon":
