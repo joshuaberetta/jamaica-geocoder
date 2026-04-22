@@ -1,10 +1,12 @@
 import { Anchor, Container, Group, Paper, Stack, Tabs, Text } from '@mantine/core';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { AppHeader } from '../components/AppHeader';
 import { BatchUpload } from '../components/BatchUpload';
 import { CountrySelect } from '../components/CountrySelect';
 import { MapSection } from '../components/MapSection';
 import { SingleAddressLookup } from '../components/SingleAddressLookup';
+import { useCountries } from '../hooks/useCountries';
 import type { Country } from '../api/types';
 
 function KoboFooterIcon() {
@@ -20,6 +22,18 @@ export function MainPage() {
   const [selectedCountry, setSelectedCountry] = useState<Country | null>(null);
   const [mapCenter, setMapCenter] = useState<{ lat: number; lon: number; zoom: number } | null>(null);
   const [activeTab, setActiveTab] = useState<string>('map');
+  const [searchParams] = useSearchParams();
+  const { countries } = useCountries();
+
+  // Pre-select country from ?country= URL param (matches ISO2, ISO3, or key, case-insensitive)
+  useEffect(() => {
+    const param = searchParams.get('country')?.toLowerCase();
+    if (!param || countries.length === 0 || selectedCountry) return;
+    const match = countries.find(
+      (c) => c.code.toLowerCase() === param || c.iso3.toLowerCase() === param || c.key === param
+    );
+    if (match) handleCountryChange(match);
+  }, [countries, searchParams]);
 
   const handleCountryChange = (country: Country | null) => {
     setSelectedCountry(country);
