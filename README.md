@@ -58,29 +58,29 @@ docker compose up --build -d
 The `--build` step compiles the React frontend in a Node 20 stage and copies the static assets into the Python image — no separate frontend step required.
 
 This starts:
-- **db** — PostGIS 16 on port 5432 (also exposed to host for local dev)
+- **db** — PostGIS 16 (internal only — not exposed to the host; access via `docker compose exec db psql -U geocode`)
 - **geocoder** — Flask app on port 8000 (serves both the API and the compiled SPA)
 
 ### 3. Load boundary data
 
-Download and ingest the global COD-AB dataset from HDX (~940 MB):
+Run the ingest script inside the `geocoder` container — this gives it direct DB access and the correct `DATABASE_URL` without any extra config:
 
 ```bash
 # Auto-download from HDX and ingest everything (~80 countries)
-DATABASE_URL=postgresql://geocode:yourpassword@localhost:5432/geocode \
-  python scripts/ingest.py
+docker compose exec geocoder python scripts/ingest.py
 
-# Or point at an already-downloaded file
-DATABASE_URL=... python scripts/ingest.py \
-  --file data/global_admin_boundaries_matched_latest.gdb.zip
+# Or copy a pre-downloaded file into the container's /data volume first, then ingest
+docker compose cp data/global_admin_boundaries_matched_latest.gdb.zip geocoder:/data/
+docker compose exec geocoder python scripts/ingest.py \
+  --file /data/global_admin_boundaries_matched_latest.gdb.zip
 
 # Single country only (faster for testing)
-DATABASE_URL=... python scripts/ingest.py \
-  --file data/global_admin_boundaries_matched_latest.gdb.zip \
+docker compose exec geocoder python scripts/ingest.py \
+  --file /data/global_admin_boundaries_matched_latest.gdb.zip \
   --country JAM
 ```
 
-> The script skips the download if the file already exists in `data/`. The `data/` directory is gitignored.
+> The script skips the download if the file already exists in `/data/` (the container's persistent `geodata` volume).
 
 ### 4. Open the app
 
@@ -175,10 +175,93 @@ WantedBy=multi-user.target
 Re-run the ingest script for a specific country to refresh its boundaries without touching others:
 
 ```bash
-DATABASE_URL=... python scripts/ingest.py \
-  --file data/global_admin_boundaries_matched_latest.gdb.zip \
+docker compose exec geocoder python scripts/ingest.py \
+  --file /data/global_admin_boundaries_matched_latest.gdb.zip \
   --country MOZ
 ```
+
+---
+
+## Adding Countries Missing from the Global Dataset
+
+The global `_matched_latest` file covers ~110 countries. Some countries are absent because their boundaries haven't completed the edge-matching process. These can be ingested individually from their per-country HDX COD-AB pages (`https://data.humdata.org/dataset/cod-ab-{iso3}`).
+
+After every ingest run the script automatically:
+1. Refreshes the `mv_countries` materialized view (the source for the country dropdown)
+2. Calls `POST /api/cache/clear` on the running app if `APP_URL` is set — so the country list updates immediately without a restart
+
+Set `APP_URL` in your `.env` to enable step 2. When running via `docker compose exec` the script runs inside the container, so use the internal Flask port:
+
+```ini
+APP_URL=http://localhost:5000
+# APP_LOGIN_USERNAME=admin  # defaults to admin
+# APP_LOGIN_PASSWORD=...    # defaults to LOGIN_PASSWORD if not set separately
+```
+
+> If you run the script from the host instead, use `APP_URL=http://localhost:8000` (the host-mapped port).
+
+### Example: Federated States of Micronesia (FSM)
+
+FSM is not in the global dataset but its shapefile is available at:
+https://data.humdata.org/dataset/cod-ab-fsm
+
+1. Download the shapefile and copy it into the container's data volume:
+
+```bash
+curl -L "https://data.humdata.org/dataset/dc71c13f-e848-4ddc-9074-17e608464b63/resource/7348d022-6726-438c-9b1c-0b5524b7dbfd/download/fsm_admbnda_shp.zip" \
+  -o data/fsm_admbnda_shp.zip
+docker compose cp data/fsm_admbnda_shp.zip geocoder:/data/
+```
+
+2. Ingest it:
+
+```bash
+docker compose exec geocoder python scripts/ingest.py \
+  --file /data/fsm_admbnda_shp.zip \
+  --country FSM
+```
+
+The script auto-detects that this is a per-country shapefile (not the global GDB format) and routes it through the appropriate ingest path. The global dataset ingest is unaffected. The country dropdown will update automatically once the script completes.
+
+### Example: Solomon Islands (SLB)
+
+SLB is not in the global dataset. Its HDX page (`https://data.humdata.org/dataset/cod-ab-slb`) provides boundaries as **separate shapefiles per admin level** (ADM1–ADM3). The bundled `slb_polbnda.zip` file contains a `.mdb` (Microsoft Access Database) which is not supported — use the per-level shapefiles instead.
+
+1. Download each level and copy into the container:
+
+```bash
+curl -L ".../slb_admbnda_adm1.zip" -o data/slb_admbnda_adm1.zip
+curl -L ".../slb_admbnda_adm2.zip" -o data/slb_admbnda_adm2.zip
+curl -L ".../slb_admbnda_adm3.zip" -o data/slb_admbnda_adm3.zip
+docker compose cp data/slb_admbnda_adm1.zip geocoder:/data/
+docker compose cp data/slb_admbnda_adm2.zip geocoder:/data/
+docker compose cp data/slb_admbnda_adm3.zip geocoder:/data/
+```
+
+2. Ingest each file:
+
+```bash
+docker compose exec geocoder python scripts/ingest.py --file /data/slb_admbnda_adm1.zip --country SLB
+docker compose exec geocoder python scripts/ingest.py --file /data/slb_admbnda_adm2.zip --country SLB
+docker compose exec geocoder python scripts/ingest.py --file /data/slb_admbnda_adm3.zip --country SLB
+```
+
+The country dropdown updates automatically after the final run.
+
+### Adding a new country
+
+When adding a country whose field names differ from the standard COD-AB schema (`adm{n}_pcode`, `adm{n}_name`), add an entry to `FIELD_OVERRIDES` in `scripts/ingest.py` before ingesting:
+
+```python
+FIELD_OVERRIDES: dict[str, dict[str, str]] = {
+    # FSM uses ADM1NAME (no underscore) instead of ADM1_NAME
+    "FSM": {"ADM1NAME": "adm1_name"},
+    # Add further overrides here as needed
+    "XYZ": {"P_Code_ADM1": "adm1_pcode", "Name_ADM1": "adm1_name"},
+}
+```
+
+Also ensure the ISO3 → ISO2 mapping exists in `ISO3_TO_ISO2` (the script will print "no ISO2 mapping" and skip the country if it is absent). Most countries are already present; Pacific island nations and other smaller territories may need to be added.
 
 ---
 
@@ -338,3 +421,6 @@ Batch geocode a CSV or Excel file. Login via `POST /login` first (sets a session
 | `LOGIN_USERNAME` | `admin` | Batch upload username |
 | `LOGIN_PASSWORD` | `admin` | Batch upload password — **change in production** |
 | `FLASK_ENV` | `production` | Set to `development` for debug mode |
+| `APP_URL` | — | Base URL of the running app; if set, ingest script clears the in-memory cache after loading data |
+| `APP_LOGIN_USERNAME` | `admin` | Username used by the ingest script to authenticate the cache-clear request |
+| `APP_LOGIN_PASSWORD` | `admin` | Password used by the ingest script to authenticate the cache-clear request |

@@ -3,9 +3,15 @@
 COD-AB boundary ingest pipeline.
 
 Ingests OCHA COD-AB boundary files into the cod_adm PostGIS table.
-Supports GeoPackage (.gpkg), ESRI File Geodatabase (.gdb), and zipped
-versions of either (.gpkg.zip, .gdb.zip).  Run once for initial load;
+Supports GeoPackage (.gpkg), ESRI File Geodatabase (.gdb), Shapefile (.shp),
+and zipped versions of any of the above.  Run once for initial load;
 re-run per-country for incremental updates.
+
+After ingest the script automatically:
+  1. Refreshes the mv_countries materialized view (updates the country index).
+  2. Clears the app's in-memory cache via POST /api/cache/clear if APP_URL is
+     set in the environment (e.g. APP_URL=http://localhost:8000).
+     APP_LOGIN_USERNAME / APP_LOGIN_PASSWORD are used for auth (default: admin).
 
 If --file is omitted the script downloads the recommended dataset from HDX
 (global_admin_boundaries_matched_latest.gdb.zip) into the data/ directory.
@@ -18,7 +24,10 @@ Usage:
     DATABASE_URL=postgresql://... python scripts/ingest.py --file data/global_admin_boundaries_matched_latest.gdb.zip
 
     # Ingest a single country (deletes and re-inserts that country's rows)
-    DATABASE_URL=postgresql://... python scripts/ingest.py --file data/jam.gpkg --country JAM
+    DATABASE_URL=postgresql://... python scripts/ingest.py --file data/fsm_admbnda_shp.zip --country FSM
+
+    # Ingest and notify a running app to clear its cache
+    APP_URL=http://localhost:8000 DATABASE_URL=postgresql://... python scripts/ingest.py --file data/fsm_admbnda_shp.zip --country FSM
 """
 
 import argparse
@@ -122,6 +131,10 @@ NAME_RE = re.compile(r"^adm(\d+)_(name|en)$", re.IGNORECASE)
 FIELD_OVERRIDES: dict[str, dict[str, str]] = {
     # Example:
     # "XYZ": {"P_Code_ADM1": "adm1_pcode", "Name_ADM1": "adm1_name"},
+    # FSM uses ADM1NAME (no underscore) instead of ADM1_NAME
+    "FSM": {"ADM1NAME": "adm1_name"},
+    # SLB uses COUNTRY instead of ADM0_NAME
+    "SLB": {"COUNTRY": "adm0_name"},
 }
 
 
@@ -154,7 +167,7 @@ def normalize_columns(gdf: gpd.GeoDataFrame, iso3: str) -> dict[str, str]:
 # Layer helpers
 # ---------------------------------------------------------------------------
 
-LAYER_RE = re.compile(r"_adm(\d+)_", re.IGNORECASE)
+LAYER_RE = re.compile(r"_adm(\d+)(?:_|$)", re.IGNORECASE)
 
 
 def extract_admin_level(layer_name: str) -> int | None:
@@ -182,6 +195,7 @@ ISO3_TO_ISO2: dict[str, str] = {
     "CZE": "CZ", "DEU": "DE", "DJI": "DJ", "DNK": "DK", "DOM": "DO",
     "DZA": "DZ", "ECU": "EC", "EGY": "EG", "ERI": "ER", "ESP": "ES",
     "EST": "EE", "ETH": "ET", "FIN": "FI", "FJI": "FJ", "FRA": "FR",
+    "FSM": "FM",
     "GAB": "GA", "GBR": "GB", "GEO": "GE", "GHA": "GH", "GIN": "GN",
     "GMB": "GM", "GNB": "GW", "GNQ": "GQ", "GRC": "GR", "GTM": "GT",
     "GUY": "GY", "HND": "HN", "HRV": "HR", "HTI": "HT", "HUN": "HU",
@@ -579,7 +593,7 @@ def main():
 
     else:
         # Per-country COD-AB GeoPackage format
-        cod_layers = [l for l in layers if COD_AB_LAYER_RE.match(l)]
+        cod_layers = [l for l in layers if COD_AB_LAYER_RE.match(l) and "_eez" not in l.lower()]
         print(f"{len(cod_layers)} layers match COD-AB naming pattern")
 
         if not cod_layers:
@@ -600,6 +614,47 @@ def main():
             total_rows += ingest_layer(file_path, layer, iso3_override)
 
     print(f"\nDone. {total_rows:,} total rows inserted.")
+
+    # ------------------------------------------------------------------
+    # Post-ingest: refresh materialized view + clear app cache
+    # ------------------------------------------------------------------
+    print("\nRefreshing mv_countries materialized view...")
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("REFRESH MATERIALIZED VIEW CONCURRENTLY mv_countries"))
+        print("  mv_countries refreshed.")
+    except Exception as e:
+        print(f"  WARNING: Could not refresh mv_countries: {e}")
+
+    app_url = os.environ.get("APP_URL", "").rstrip("/")
+    if app_url:
+        _notify_app(app_url)
+
+
+def _notify_app(app_url: str) -> None:
+    """Log in to the running app and call POST /api/cache/clear."""
+    username = os.environ.get("APP_LOGIN_USERNAME", "admin")
+    password = os.environ.get("APP_LOGIN_PASSWORD", "admin")
+
+    print(f"\nClearing app cache at {app_url}...")
+    session = requests.Session()
+    try:
+        login = session.post(
+            f"{app_url}/login",
+            data={"username": username, "password": password},
+            timeout=10,
+            allow_redirects=False,
+        )
+        if login.status_code not in (200, 302):
+            print(f"  WARNING: Login returned HTTP {login.status_code} — cache not cleared.")
+            return
+        resp = session.post(f"{app_url}/api/cache/clear", timeout=10)
+        if resp.ok:
+            print("  App cache cleared.")
+        else:
+            print(f"  WARNING: Cache clear returned HTTP {resp.status_code}: {resp.text}")
+    except requests.RequestException as e:
+        print(f"  WARNING: Could not reach app at {app_url}: {e}")
 
 
 if __name__ == "__main__":
