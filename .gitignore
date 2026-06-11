@@ -21,6 +21,9 @@ data/
 tmp/
 *.zip
 
+# Local docker-compose overrides (e.g. publishing the DB port for host tooling)
+docker-compose.override.yml
+
 # IDE
 .vscode/
 .idea/

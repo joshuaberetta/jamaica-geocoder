@@ -128,6 +128,66 @@ def resolve_pcodes(
 
 
 # ---------------------------------------------------------------------------
+# Secondary (non-administrative) boundary resolution, e.g. health zones
+# ---------------------------------------------------------------------------
+
+# Maps a secondary boundary_type to the response-key prefix used for its fields.
+# e.g. a 'health' boundary emits health_zone_name / health_zone_dhis2 / health_zone_id.
+SECONDARY_KEY_PREFIX: Dict[str, str] = {
+    "health": "health_zone",
+}
+
+
+def resolve_secondary_boundaries(
+    lat: float, lon: float, iso2: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Return non-administrative boundary attributes (e.g. health zone) containing
+    a WGS84 point, keyed by a per-type prefix:
+
+        health -> health_zone_name, health_zone_dhis2, health_zone_id
+
+    Returns an empty dict when the point is in no secondary boundary (the common
+    case for countries with no such data loaded), so the caller can safely merge
+    it into the response.
+    """
+    iso2_clause = "AND iso2 = %s" if iso2 else ""
+    query = f"""
+        SELECT boundary_type, name, alt_name, ref_dhis2, source_id
+        FROM secondary_boundaries
+        WHERE ST_Contains(geom, ST_SetSRID(ST_Point(%s, %s), 4326))
+        {iso2_clause}
+    """
+    params = [lon, lat]
+    if iso2:
+        params.append(iso2.upper())
+
+    try:
+        with get_db_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(query, params)
+                matches = cur.fetchall()
+    except Exception as e:
+        # Missing table (data not loaded yet) or other DB error: degrade silently.
+        print(f"resolve_secondary_boundaries({lat}, {lon}) skipped: {e}")
+        return {}
+
+    result: Dict[str, Any] = {}
+    for row in matches:
+        prefix = SECONDARY_KEY_PREFIX.get(row["boundary_type"])
+        if not prefix:
+            continue
+        if row.get("name"):
+            result[f"{prefix}_name"] = row["name"]
+        if row.get("ref_dhis2"):
+            result[f"{prefix}_dhis2"] = row["ref_dhis2"]
+        if row.get("source_id"):
+            result[f"{prefix}_id"] = row["source_id"]
+
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Geocoding via Google APIs
 # ---------------------------------------------------------------------------
 

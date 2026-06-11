@@ -28,7 +28,13 @@ from flask_compress import Compress
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
-from geocode import geocode_address, geocode_dataframe, get_db_conn, resolve_pcodes
+from geocode import (
+    geocode_address,
+    geocode_dataframe,
+    get_db_conn,
+    resolve_pcodes,
+    resolve_secondary_boundaries,
+)
 
 load_dotenv()
 
@@ -391,6 +397,7 @@ def geocode_get():
         if confidence:
             response["confidence"] = confidence
         response.update(pcodes)
+        response.update(resolve_secondary_boundaries(lat, lon, iso2=iso2))
         return jsonify(response)
 
     except Exception as e:
@@ -478,6 +485,7 @@ def geocode_post():
                 continue
             lat, lon = row.geometry.y, row.geometry.x
             pcodes = resolve_pcodes(lat, lon, iso2=iso2) or {}
+            pcodes.update(resolve_secondary_boundaries(lat, lon, iso2=iso2))
             pcode_rows.append(pcodes)
 
         pcode_df = pd.DataFrame(pcode_rows)
@@ -559,6 +567,7 @@ def geocode_single():
         # Resolve pcodes from actual coordinates without country filter — the
         # geocoded location already determines the country.
         pcodes = resolve_pcodes(lat, lon) or {}
+        secondary = resolve_secondary_boundaries(lat, lon)
 
         return jsonify({
             "success": True,
@@ -567,6 +576,7 @@ def geocode_single():
             "longitude": lon,
             "confidence": confidence,
             **pcodes,
+            **secondary,
         })
 
     except Exception as e:
@@ -600,7 +610,10 @@ def reverse_geocode():
         if not pcodes:
             return jsonify({"success": False, "error": "Point outside known boundaries"})
 
-        return jsonify({"success": True, "latitude": lat, "longitude": lon, **pcodes})
+        secondary = resolve_secondary_boundaries(lat, lon, iso2=iso2)
+        return jsonify(
+            {"success": True, "latitude": lat, "longitude": lon, **pcodes, **secondary}
+        )
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500

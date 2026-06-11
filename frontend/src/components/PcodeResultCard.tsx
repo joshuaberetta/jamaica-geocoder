@@ -34,6 +34,11 @@ export function PcodeResultCard({ result }: Props) {
     if (name) rows.push({ label: `ADM${n} Name`, value: name });
   }
 
+  if (result.health_zone_name)
+    rows.push({ label: 'Health Zone', value: result.health_zone_name });
+  if (result.health_zone_dhis2)
+    rows.push({ label: 'Health Zone DHIS2', value: result.health_zone_dhis2 });
+
   if (!rows.length) {
     return <Text size="sm">No P-code data found.</Text>;
   }

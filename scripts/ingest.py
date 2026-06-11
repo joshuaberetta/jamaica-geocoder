@@ -543,6 +543,154 @@ def ingest_global_layer(file_path: str, layer_name: str,
     return total
 
 
+# ---------------------------------------------------------------------------
+# Secondary (non-administrative) boundary ingest, e.g. health zones
+# ---------------------------------------------------------------------------
+
+# Maps a secondary-boundary type to the source-field → table-column mapping
+# for that dataset. Source fields not listed are ignored. Add new types here
+# (or new field aliases) as further datasets are onboarded.
+SECONDARY_FIELD_MAPS: dict[str, dict[str, str]] = {
+    # OSM RDC zones de santé (Référentiel Géographique Commun)
+    "health": {
+        "name": "name",
+        "alt_name": "alt_name",
+        "ref:dhis2": "ref_dhis2",
+        "full_id": "source_id",
+        "health_level": "level",
+        "attribution": "attribution",
+    },
+}
+
+
+def ensure_secondary_table() -> None:
+    """Create secondary_boundaries (and its indexes) if absent — keeps the
+    secondary ingest self-contained on databases provisioned before this table
+    existed (schema.sql only runs on a fresh volume)."""
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS secondary_boundaries (
+                id            SERIAL PRIMARY KEY,
+                iso2          CHAR(2) NOT NULL,
+                iso3          CHAR(3),
+                boundary_type TEXT    NOT NULL,
+                level         TEXT,
+                name          TEXT,
+                alt_name      TEXT,
+                ref_dhis2     TEXT,
+                source_id     TEXT,
+                attribution   TEXT,
+                geom          GEOMETRY(MultiPolygon, 4326) NOT NULL
+            )
+        """))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS secbnd_geom_idx "
+            "ON secondary_boundaries USING GIST (geom)"
+        ))
+        conn.execute(text(
+            "CREATE INDEX IF NOT EXISTS secbnd_iso2_type_idx "
+            "ON secondary_boundaries (iso2, boundary_type)"
+        ))
+
+
+def ingest_secondary_boundary(
+    file_path: str, boundary_type: str, iso3: str, layer_name: str | None = None
+) -> int:
+    """
+    Load a single secondary-boundary layer (e.g. health zones) into
+    secondary_boundaries. Deletes existing rows for (iso2, boundary_type)
+    before inserting. Returns number of rows inserted.
+
+    boundary_type: e.g. 'health'. Determines the source-field mapping used.
+    iso3:          required — secondary datasets carry no ISO column.
+    layer_name:    optional; defaults to the file's single layer.
+    """
+    iso3 = iso3.upper()
+    iso2 = iso3_to_iso2(iso3)
+    if not iso2:
+        print(f"  SKIP: no ISO2 mapping for {iso3}")
+        return 0
+
+    field_map = SECONDARY_FIELD_MAPS.get(boundary_type)
+    if field_map is None:
+        print(
+            f"  SKIP: unknown secondary boundary type '{boundary_type}'. "
+            f"Known types: {sorted(SECONDARY_FIELD_MAPS)}"
+        )
+        return 0
+
+    if layer_name is None:
+        layers = fiona.listlayers(file_path)
+        if len(layers) != 1:
+            print(f"  Multiple layers found {layers}; specify one. Using first.")
+        layer_name = layers[0]
+
+    print(f"  Loading {layer_name} as '{boundary_type}' (ISO3={iso3}, ISO2={iso2})...")
+
+    gdf = gpd.read_file(file_path, layer=layer_name)
+    gdf = gdf.to_crs("EPSG:4326")
+
+    from shapely.ops import transform
+
+    def to_multi(geom):
+        if geom is None:
+            return None
+        geom = transform(lambda x, y, *args: (x, y), geom)  # drop Z
+        return geom if geom.geom_type == "MultiPolygon" else MultiPolygon([geom])
+
+    gdf["geometry"] = gdf["geometry"].apply(to_multi)
+
+    cols = ["name", "alt_name", "ref_dhis2", "source_id", "level", "attribution"]
+    rows = []
+    for _, feat in gdf.iterrows():
+        geom = feat.geometry
+        if geom is None or geom.is_empty:
+            continue
+        row: dict = {
+            "iso2": iso2,
+            "iso3": iso3,
+            "boundary_type": boundary_type,
+            "geom": geom.wkt,
+        }
+        for col in cols:
+            row[col] = None
+        for src, dst in field_map.items():
+            val = feat.get(src)
+            if val is not None and str(val).strip() != "":
+                row[dst] = str(val)
+        rows.append(row)
+
+    if not rows:
+        print(f"  No valid geometries in {layer_name}")
+        return 0
+
+    ensure_secondary_table()
+    with engine.begin() as conn:
+        conn.execute(
+            text(
+                "DELETE FROM secondary_boundaries "
+                "WHERE iso2 = :iso2 AND boundary_type = :btype"
+            ),
+            {"iso2": iso2, "btype": boundary_type},
+        )
+        conn.execute(
+            text("""
+                INSERT INTO secondary_boundaries (
+                    iso2, iso3, boundary_type, level,
+                    name, alt_name, ref_dhis2, source_id, attribution, geom
+                ) VALUES (
+                    :iso2, :iso3, :boundary_type, :level,
+                    :name, :alt_name, :ref_dhis2, :source_id, :attribution,
+                    ST_Multi(ST_GeomFromText(:geom, 4326))
+                )
+            """),
+            rows,
+        )
+
+    print(f"  Inserted {len(rows)} rows for {iso2} {boundary_type} boundaries")
+    return len(rows)
+
+
 def resolve_file_path(raw_path: str) -> str:
     """
     Return a fiona/GDAL-readable path.
@@ -574,7 +722,31 @@ def main():
         default=None,
         help="ISO3 or ISO2 code to ingest (default: all countries)",
     )
+    parser.add_argument(
+        "--secondary-boundary",
+        default=None,
+        metavar="TYPE",
+        help=(
+            "Ingest a non-administrative boundary layer into secondary_boundaries "
+            "instead of cod_adm, e.g. --secondary-boundary health. "
+            "Requires --file and --country."
+        ),
+    )
     args = parser.parse_args()
+
+    # Secondary-boundary path: a separate, explicitly-invoked ingest into
+    # secondary_boundaries (does not touch cod_adm or the COD-AB detection).
+    if args.secondary_boundary:
+        if not args.file:
+            sys.exit("ERROR: --secondary-boundary requires --file.")
+        if not args.country:
+            sys.exit("ERROR: --secondary-boundary requires --country (ISO3).")
+        file_path = resolve_file_path(args.file)
+        n = ingest_secondary_boundary(
+            file_path, args.secondary_boundary.lower(), args.country
+        )
+        print(f"\nDone. {n:,} secondary-boundary rows inserted.")
+        return
 
     if args.file:
         display_path = args.file

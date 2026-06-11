@@ -49,3 +49,29 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS mv_countries AS
 
 -- Unique index required for CONCURRENTLY refresh (non-locking).
 CREATE UNIQUE INDEX IF NOT EXISTS mv_countries_iso2_idx ON mv_countries (iso2);
+
+-- ---------------------------------------------------------------------------
+-- Secondary (non-administrative) boundary layers, e.g. health zones.
+-- These form a parallel hierarchy that overlaps the cod_adm admin levels
+-- rather than nesting into them, and are keyed by an external id (e.g. DHIS2)
+-- instead of a P-code. Queried independently of cod_adm and merged into the
+-- geocode output. Generic across countries and boundary types.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS secondary_boundaries (
+    id            SERIAL PRIMARY KEY,
+    iso2          CHAR(2) NOT NULL,         -- ISO 3166-1 alpha-2, e.g. 'CD'
+    iso3          CHAR(3),                  -- ISO 3166-1 alpha-3, e.g. 'COD'
+    boundary_type TEXT    NOT NULL,         -- OSM boundary tag, e.g. 'health'
+    level         TEXT,                     -- source level value, e.g. '6'
+    name          TEXT,
+    alt_name      TEXT,
+    ref_dhis2     TEXT,                     -- DHIS2 org-unit id (NULL allowed)
+    source_id     TEXT,                     -- source feature id, e.g. OSM 'r10750251'
+    attribution   TEXT,
+    geom          GEOMETRY(MultiPolygon, 4326) NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS secbnd_geom_idx
+    ON secondary_boundaries USING GIST (geom);
+CREATE INDEX IF NOT EXISTS secbnd_iso2_type_idx
+    ON secondary_boundaries (iso2, boundary_type);
