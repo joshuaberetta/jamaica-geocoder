@@ -283,11 +283,31 @@ output as `health_zone_name` / `health_zone_dhis2` / `health_zone_id` fields, in
 addition to the usual `adm*` P-codes. The admin lookup for other countries is
 unaffected (the fields simply don't appear when no secondary boundary matches).
 
+#### 1. Get the data
+
+The DRC health zones come from the OpenStreetMap RDC / *Référentiel Géographique
+Commun* export, published on HDX:
+https://data.humdata.org/dataset/cod-rdc-zones-de-sante
+
+Download the **GeoPackage** resource (`OSM_RDC_sante_zones_211212.gpkg`,
+resource ID `8417072d-e942-4ba3-ab99-9994aeb42b3e`) into `data/`. Use the
+GeoPackage (`.gpkg`), **not** the shapefile (`.zip`) — the shapefile DBF format
+truncates the `ref:dhis2` field name, losing the DHIS2 id.
+
+```bash
+curl -L "https://data.humdata.org/dataset/cod-rdc-zones-de-sante/resource/8417072d-e942-4ba3-ab99-9994aeb42b3e/download/osm_rdc_sante_zones_211212.gpkg" \
+  -o data/osm_rdc_sante_zones_211212.gpkg
+```
+
+> If the direct link 404s (HDX occasionally re-slugs datasets), open the dataset
+> page above and use the GeoPackage resource's **Download** button.
+
+#### 2. Ingest it
+
 Ingest uses the `--secondary-boundary <type>` flag together with `--file` and
 `--country` (ISO3 — the source file has no country column):
 
 ```bash
-# DRC health zones (GeoPackage from HDX / OpenStreetMap RDC)
 docker compose cp data/osm_rdc_sante_zones_211212.gpkg geocoder:/data/
 docker compose exec geocoder python scripts/ingest.py \
   --file /data/osm_rdc_sante_zones_211212.gpkg \
@@ -295,10 +315,17 @@ docker compose exec geocoder python scripts/ingest.py \
   --secondary-boundary health
 ```
 
-Use the GeoPackage (`.gpkg`), not the shapefile (`.zip`) — the shapefile DBF
-format truncates the `ref:dhis2` field name. The ingest re-creates the table if
-it doesn't exist yet (databases provisioned before this feature), and is
-idempotent: re-running replaces that country + boundary-type's rows.
+The ingest re-creates the `secondary_boundaries` table if it doesn't exist yet
+(so existing production databases provisioned before this feature need no manual
+migration — the `CREATE TABLE IF NOT EXISTS` runs automatically), and is
+idempotent: re-running replaces that country + boundary-type's rows. If
+`APP_URL` is set (see [Updating Boundary Data](#updating-boundary-data)) the
+script clears the running app's cache automatically; otherwise restart the app
+so the new layer is picked up.
+
+Once loaded, the interactive map automatically shows a **"Health zones"** toggle
+for the DRC (driven by `GET /api/secondary_types`); other countries are
+unaffected.
 
 To support a new secondary dataset, add a field mapping under
 `SECONDARY_FIELD_MAPS` in `scripts/ingest.py` and (if it's a new boundary type) a
@@ -427,6 +454,64 @@ curl -X POST http://localhost:8000/reverse_geocode \
   -d '{"latitude": 17.9978, "longitude": -76.7936, "country": "JM"}'
 ```
 
+> For countries with secondary boundary layers loaded (see [Adding Secondary
+> Boundary Layers](#adding-secondary-boundary-layers-eg-health-zones)), the
+> `GET /geocode`, `POST /geocode_single`, and `POST /reverse_geocode` responses
+> also include `health_zone_name` / `health_zone_dhis2` / `health_zone_id` when
+> the point falls inside a health zone, and the batch `POST /geocode` output adds
+> matching columns.
+
+---
+
+### `GET /api/secondary_types` — public
+
+Distinct secondary (non-administrative) boundary types loaded for a country.
+The map UI uses this to decide which overlay toggles to show. Returns an empty
+list for countries with no such data.
+
+| Param | Description |
+|-------|-------------|
+| `country` | ISO2 code, e.g. `CD` |
+
+```bash
+curl "http://localhost:8000/api/secondary_types?country=CD"
+```
+
+```json
+{ "iso2": "CD", "types": ["health"] }
+```
+
+---
+
+### `GET /secondary_boundaries.geojson` — public
+
+Secondary boundary polygons for a country as GeoJSON (simplified for display),
+cached in memory per `(country, type)`. Used by the map overlay.
+
+| Param | Description |
+|-------|-------------|
+| `country` | ISO2 code (required), e.g. `CD` |
+| `type` | Boundary type, default `health` |
+
+```bash
+curl "http://localhost:8000/secondary_boundaries.geojson?country=CD&type=health"
+```
+
+Each feature's `properties` carry `name`, `ref_dhis2`, and `source_id`:
+
+```json
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": { "type": "Polygon", "coordinates": [/* ... */] },
+      "properties": { "name": "Kasaji", "ref_dhis2": "kiFDojGFG3x", "source_id": "r10731780" }
+    }
+  ]
+}
+```
+
 ---
 
 ### `POST /geocode` — **auth required**
@@ -501,7 +586,7 @@ Returns HTTP 302 redirect to `/`.
 
 ### `POST /api/cache/clear` — **auth required**
 
-Clears the in-memory countries and boundaries cache and refreshes the `mv_countries` materialized view. Called automatically by `scripts/ingest.py` when `APP_URL` is set.
+Clears the in-memory countries, admin-boundaries, and secondary-boundaries caches and refreshes the `mv_countries` materialized view. Called automatically by `scripts/ingest.py` when `APP_URL` is set (including after a `--secondary-boundary` ingest).
 
 ```bash
 curl -b cookies.txt -X POST http://localhost:8000/api/cache/clear

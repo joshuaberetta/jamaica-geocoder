@@ -746,6 +746,11 @@ def main():
             file_path, args.secondary_boundary.lower(), args.country
         )
         print(f"\nDone. {n:,} secondary-boundary rows inserted.")
+        # Clear the app's in-memory cache so the new overlay/lookup is live
+        # without a restart. No mv_countries refresh — that view is admin-only.
+        app_url = os.environ.get("APP_URL", "").rstrip("/")
+        if app_url:
+            _notify_app(app_url)
         return
 
     if args.file:
