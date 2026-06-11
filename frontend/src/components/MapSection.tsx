@@ -201,16 +201,25 @@ export function MapSection({ country, mapCenter, isVisible = true }: Props) {
             />
             {geojson && (
               <GeoJSON
-                key={`${country}-${selectedLevel}`}
+                // Re-key on overlay state so the layer restyles when toggled.
+                key={`${country}-${selectedLevel}-${secondaryGeojson ? 'hz' : 'plain'}`}
                 data={geojson}
-                style={{ color: '#3a7fc1', weight: 1, fillOpacity: 0.05, fillColor: '#3a7fc1' }}
+                style={
+                  secondaryGeojson
+                    // Overlay on: bolder, darker admin lines so they read
+                    // clearly through the health-zone mesh drawn on top.
+                    ? { color: '#1b3b5f', weight: 2.5, opacity: 0.9, fillOpacity: 0, fillColor: '#3a7fc1' }
+                    : { color: '#3a7fc1', weight: 1, fillOpacity: 0.05, fillColor: '#3a7fc1' }
+                }
               />
             )}
             {secondaryGeojson && (
               <GeoJSON
                 key={`sec-${country}-${secondaryType}`}
                 data={secondaryGeojson}
-                style={{ color: '#c0392b', weight: 1, fillOpacity: 0.05, fillColor: '#c0392b' }}
+                // Thin stroke + transparent fill so the mesh doesn't obscure the
+                // admin boundaries beneath it (fill stays on, so clicks register).
+                style={{ color: '#c0392b', weight: 0.8, opacity: 0.85, fillOpacity: 0, fillColor: '#c0392b' }}
                 onEachFeature={(feature: Feature<Geometry, SecondaryProps>, layer) => {
                   const p = feature.properties ?? {};
                   if (p.name || p.ref_dhis2) {
