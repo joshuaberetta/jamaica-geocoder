@@ -48,6 +48,7 @@ Compress(app)
 
 _countries_cache: dict = {}        # {"data": [...], "json": "...", "etag": "..."}
 _boundaries_cache: dict = {}       # {(iso2, level): {"json": "...", "etag": "..."}}
+_secondary_cache: dict = {}        # {(iso2, type): {"json": "...", "etag": "..."}}
 _cache_lock = Lock()
 app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024  # 16 MB
 app.config["UPLOAD_FOLDER"] = tempfile.gettempdir()
@@ -340,6 +341,112 @@ def boundaries_geojson():
 
     with _cache_lock:
         _boundaries_cache[cache_key] = {"json": fc, "etag": etag}
+
+    if request.headers.get("If-None-Match") == etag:
+        return "", 304
+
+    from flask import Response
+    resp = Response(fc, mimetype="application/json")
+    resp.headers["ETag"] = etag
+    resp.headers["Cache-Control"] = "public, max-age=3600"
+    return resp
+
+
+# ---------------------------------------------------------------------------
+# Secondary (non-administrative) boundary layers, e.g. health zones
+# ---------------------------------------------------------------------------
+
+
+@app.route("/api/secondary_types")
+def secondary_types():
+    """
+    Return the distinct secondary boundary types available for a country,
+    so the frontend can offer matching overlay toggles. Empty list when none.
+
+    Query params:
+        country  ISO2 code (required)
+    """
+    iso2 = request.args.get("country", "").upper()
+    if not iso2:
+        return jsonify({"error": "country parameter required"}), 400
+    try:
+        with get_db_conn() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT DISTINCT boundary_type FROM secondary_boundaries "
+                    "WHERE iso2 = %s ORDER BY boundary_type",
+                    [iso2],
+                )
+                types = [r[0] for r in cur.fetchall()]
+    except Exception:
+        # Table may not exist yet (no secondary data loaded) — treat as none.
+        types = []
+    return jsonify({"iso2": iso2, "types": types})
+
+
+@app.route("/secondary_boundaries.geojson")
+def secondary_boundaries_geojson():
+    """
+    Secondary boundary polygons (e.g. health zones) for a country as GeoJSON.
+    Cached in memory per (country, type), mirroring /boundaries.geojson.
+
+    Query params:
+        country  ISO2 code (required)
+        type     boundary type, e.g. 'health' (default: 'health')
+    """
+    iso2 = request.args.get("country", "").upper()
+    if not iso2:
+        return jsonify({"error": "country parameter required"}), 400
+    btype = request.args.get("type", "health").lower()
+
+    cache_key = (iso2, btype)
+    with _cache_lock:
+        cached = _secondary_cache.get(cache_key)
+
+    if cached:
+        etag = cached["etag"]
+        if request.headers.get("If-None-Match") == etag:
+            return "", 304
+        from flask import Response
+        resp = Response(cached["json"], mimetype="application/json")
+        resp.headers["ETag"] = etag
+        resp.headers["Cache-Control"] = "public, max-age=3600"
+        return resp
+
+    try:
+        with get_db_conn() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        name,
+                        ref_dhis2,
+                        source_id,
+                        ST_AsGeoJSON(ST_SimplifyPreserveTopology(geom, 0.001))::json
+                            AS geometry
+                    FROM secondary_boundaries
+                    WHERE iso2 = %s AND boundary_type = %s
+                    """,
+                    [iso2, btype],
+                )
+                rows = cur.fetchall()
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    features = []
+    for row in rows:
+        geom = row.pop("geometry")
+        features.append({
+            "type": "Feature",
+            "geometry": geom,
+            "properties": dict(row),
+        })
+
+    fc = json.dumps({"type": "FeatureCollection", "features": features})
+    etag = hashlib.md5(fc.encode()).hexdigest()
+
+    with _cache_lock:
+        _secondary_cache[cache_key] = {"json": fc, "etag": etag}
 
     if request.headers.get("If-None-Match") == etag:
         return "", 304
@@ -658,6 +765,7 @@ def clear_cache():
     with _cache_lock:
         _countries_cache.clear()
         _boundaries_cache.clear()
+        _secondary_cache.clear()
 
     # Rebuild the materialized view so the next cold-cache hit is instant.
     try:

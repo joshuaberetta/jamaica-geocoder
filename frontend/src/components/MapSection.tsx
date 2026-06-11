@@ -1,12 +1,26 @@
-import { Alert, Box, Loader, Overlay, Paper, Select, Stack, Text } from '@mantine/core';
+import { Alert, Box, Group, Loader, Overlay, Paper, Select, Stack, Switch, Text } from '@mantine/core';
 import { useCallback, useEffect, useState } from 'react';
 import { MapContainer, TileLayer, GeoJSON, Marker, useMapEvents, useMap } from 'react-leaflet';
 import L from 'leaflet';
-import type { FeatureCollection } from 'geojson';
+import type { Feature, FeatureCollection, Geometry } from 'geojson';
 import { reverseGeocode } from '../api/client';
 import type { PcodeResult } from '../api/types';
 import { useAvailableLevels } from '../hooks/useAvailableLevels';
+import { useSecondaryTypes } from '../hooks/useSecondaryTypes';
 import { PcodeResultCard } from './PcodeResultCard';
+
+// Human-friendly labels for secondary boundary types (falls back to the raw key).
+const SECONDARY_LABELS: Record<string, string> = {
+  health: 'Health zones',
+};
+
+const secondaryLabel = (t: string) => SECONDARY_LABELS[t] ?? t;
+
+interface SecondaryProps {
+  name?: string;
+  ref_dhis2?: string;
+  source_id?: string;
+}
 
 // Fix leaflet default marker icons in Webpack/Vite
 delete (L.Icon.Default.prototype as unknown as Record<string, unknown>)._getIconUrl;
@@ -70,10 +84,15 @@ function ClickHandler({ country, onResult }: ClickHandlerProps) {
 
 export function MapSection({ country, mapCenter, isVisible = true }: Props) {
   const levels = useAvailableLevels(country);
+  const secondaryTypes = useSecondaryTypes(country);
   const [selectedLevel, setSelectedLevel] = useState<number>(2);
   const [geojson, setGeojson] = useState<FeatureCollection | null>(null);
   const [overlayVisible, setOverlayVisible] = useState(false);
   const [markerPos, setMarkerPos] = useState<[number, number] | null>(null);
+
+  // The secondary boundary type currently shown as an overlay (null = off).
+  const [secondaryType, setSecondaryType] = useState<string | null>(null);
+  const [secondaryGeojson, setSecondaryGeojson] = useState<FeatureCollection | null>(null);
 
   const handleFitDone = useCallback(() => setOverlayVisible(false), []);
   const [result, setResult] = useState<PcodeResult | null>(null);
@@ -108,6 +127,26 @@ export function MapSection({ country, mapCenter, isVisible = true }: Props) {
     return () => controller.abort();
   }, [country, selectedLevel]);
 
+  // Reset the secondary overlay selection whenever the country changes.
+  useEffect(() => {
+    setSecondaryType(null);
+    setSecondaryGeojson(null);
+  }, [country]);
+
+  // Load secondary boundary GeoJSON when a type is toggled on.
+  useEffect(() => {
+    setSecondaryGeojson(null);
+    if (!country || !secondaryType) return;
+    const controller = new AbortController();
+    fetch(`/secondary_boundaries.geojson?country=${country}&type=${secondaryType}`, {
+      signal: controller.signal,
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => { if (!controller.signal.aborted) setSecondaryGeojson(data); })
+      .catch((err) => { if (err.name !== 'AbortError') setSecondaryGeojson(null); });
+    return () => controller.abort();
+  }, [country, secondaryType]);
+
   const handleMapClick = (res: PcodeResult, lat: number, lon: number) => {
     setMarkerPos([lat, lon]);
     setResult(res);
@@ -122,15 +161,27 @@ export function MapSection({ country, mapCenter, isVisible = true }: Props) {
           Click anywhere on the map to get P-code information for that location.
         </Text>
 
-        {levelOptions.length > 0 && (
-          <Select
-            label="Boundary level"
-            data={levelOptions}
-            value={String(selectedLevel)}
-            onChange={(v) => v && setSelectedLevel(Number(v))}
-            style={{ maxWidth: 180 }}
-          />
-        )}
+        <Group align="flex-end" gap="lg">
+          {levelOptions.length > 0 && (
+            <Select
+              label="Boundary level"
+              data={levelOptions}
+              value={String(selectedLevel)}
+              onChange={(v) => v && setSelectedLevel(Number(v))}
+              style={{ maxWidth: 180 }}
+            />
+          )}
+
+          {secondaryTypes.map((t) => (
+            <Switch
+              key={t}
+              label={secondaryLabel(t)}
+              checked={secondaryType === t}
+              onChange={(e) => setSecondaryType(e.currentTarget.checked ? t : null)}
+              pb={6}
+            />
+          ))}
+        </Group>
 
         <Box style={{ position: 'relative', zIndex: 0 }}>
           <MapContainer
@@ -149,6 +200,22 @@ export function MapSection({ country, mapCenter, isVisible = true }: Props) {
                 key={`${country}-${selectedLevel}`}
                 data={geojson}
                 style={{ color: '#3a7fc1', weight: 1, fillOpacity: 0.05, fillColor: '#3a7fc1' }}
+              />
+            )}
+            {secondaryGeojson && (
+              <GeoJSON
+                key={`sec-${country}-${secondaryType}`}
+                data={secondaryGeojson}
+                style={{ color: '#c0392b', weight: 1, fillOpacity: 0.05, fillColor: '#c0392b' }}
+                onEachFeature={(feature: Feature<Geometry, SecondaryProps>, layer) => {
+                  const p = feature.properties ?? {};
+                  if (!p.name && !p.ref_dhis2) return;
+                  const rows = [
+                    p.name ? `<strong>${p.name}</strong>` : '',
+                    p.ref_dhis2 ? `DHIS2: ${p.ref_dhis2}` : '',
+                  ].filter(Boolean);
+                  layer.bindPopup(rows.join('<br/>'));
+                }}
               />
             )}
             {markerPos && <Marker position={markerPos} />}

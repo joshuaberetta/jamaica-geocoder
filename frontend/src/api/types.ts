@@ -36,6 +36,11 @@ export interface AvailableLevels {
   levels: number[];
 }
 
+export interface SecondaryTypes {
+  iso2: string;
+  types: string[];
+}
+
 export interface BatchStats {
   total: number;
   successful: number;

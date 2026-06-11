@@ -1,4 +1,4 @@
-import type { AvailableLevels, BatchResult, Country, PcodeResult } from './types';
+import type { AvailableLevels, BatchResult, Country, PcodeResult, SecondaryTypes } from './types';
 
 async function request<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
   const res = await fetch(input, init);
@@ -15,6 +15,10 @@ export function fetchCountries(): Promise<Country[]> {
 
 export function fetchAvailableLevels(iso2: string): Promise<AvailableLevels> {
   return request<AvailableLevels>(`/api/available_levels?country=${iso2}`);
+}
+
+export function fetchSecondaryTypes(iso2: string): Promise<SecondaryTypes> {
+  return request<SecondaryTypes>(`/api/secondary_types?country=${iso2}`);
 }
 
 export function geocodeSingle(address: string, country?: string): Promise<PcodeResult> {
