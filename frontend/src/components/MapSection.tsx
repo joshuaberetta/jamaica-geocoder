@@ -1,5 +1,5 @@
 import { Alert, Box, Group, Loader, Overlay, Paper, Select, Stack, Switch, Text } from '@mantine/core';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { MapContainer, TileLayer, GeoJSON, Marker, useMapEvents, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import type { Feature, FeatureCollection, Geometry } from 'geojson';
@@ -37,8 +37,7 @@ interface Props {
 }
 
 interface ClickHandlerProps {
-  country: string | null;
-  onResult: (result: PcodeResult, lat: number, lon: number) => void;
+  onClick: (lat: number, lon: number) => void;
 }
 
 /**
@@ -67,17 +66,9 @@ function MapViewManager({ geojson, isVisible, onFitDone }: { geojson: FeatureCol
   return null;
 }
 
-function ClickHandler({ country, onResult }: ClickHandlerProps) {
+function ClickHandler({ onClick }: ClickHandlerProps) {
   useMapEvents({
-    click: async (e) => {
-      const { lat, lng } = e.latlng;
-      try {
-        const result = await reverseGeocode(lat, lng, country ?? undefined);
-        onResult(result, lat, lng);
-      } catch (err) {
-        onResult({ success: false, error: (err as Error).message }, lat, lng);
-      }
-    },
+    click: (e) => onClick(e.latlng.lat, e.latlng.lng),
   });
   return null;
 }
@@ -147,10 +138,23 @@ export function MapSection({ country, mapCenter, isVisible = true }: Props) {
     return () => controller.abort();
   }, [country, secondaryType]);
 
-  const handleMapClick = (res: PcodeResult, lat: number, lon: number) => {
+  // Reverse-geocode a clicked point and update the marker + result box below
+  // the map. Shared by background map clicks and health-zone overlay clicks so
+  // the info box updates regardless of which layer received the click.
+  // Kept in a ref so the GeoJSON onEachFeature closure always calls the latest
+  // version without needing to rebind the layer.
+  const resolveAt = useCallback(async (lat: number, lon: number) => {
     setMarkerPos([lat, lon]);
-    setResult(res);
-  };
+    try {
+      const res = await reverseGeocode(lat, lon, country ?? undefined);
+      setResult(res);
+    } catch (err) {
+      setResult({ success: false, error: (err as Error).message });
+    }
+  }, [country]);
+
+  const resolveAtRef = useRef(resolveAt);
+  useEffect(() => { resolveAtRef.current = resolveAt; }, [resolveAt]);
 
   const levelOptions = levels.map((l) => ({ value: String(l), label: `ADM${l}` }));
 
@@ -209,17 +213,24 @@ export function MapSection({ country, mapCenter, isVisible = true }: Props) {
                 style={{ color: '#c0392b', weight: 1, fillOpacity: 0.05, fillColor: '#c0392b' }}
                 onEachFeature={(feature: Feature<Geometry, SecondaryProps>, layer) => {
                   const p = feature.properties ?? {};
-                  if (!p.name && !p.ref_dhis2) return;
-                  const rows = [
-                    p.name ? `<strong>${p.name}</strong>` : '',
-                    p.ref_dhis2 ? `DHIS2: ${p.ref_dhis2}` : '',
-                  ].filter(Boolean);
-                  layer.bindPopup(rows.join('<br/>'));
+                  if (p.name || p.ref_dhis2) {
+                    const rows = [
+                      p.name ? `<strong>${p.name}</strong>` : '',
+                      p.ref_dhis2 ? `DHIS2: ${p.ref_dhis2}` : '',
+                    ].filter(Boolean);
+                    layer.bindPopup(rows.join('<br/>'));
+                  }
+                  // The overlay swallows the map's click event, so resolve the
+                  // P-codes here too — keeps the info box in sync with the popup.
+                  layer.on('click', (e) => {
+                    const { lat, lng } = (e as L.LeafletMouseEvent).latlng;
+                    resolveAtRef.current(lat, lng);
+                  });
                 }}
               />
             )}
             {markerPos && <Marker position={markerPos} />}
-            <ClickHandler country={country} onResult={handleMapClick} />
+            <ClickHandler onClick={resolveAt} />
           </MapContainer>
 
           {overlayVisible && (
