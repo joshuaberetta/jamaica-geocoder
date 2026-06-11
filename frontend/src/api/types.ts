@@ -23,6 +23,10 @@ export interface PcodeResult {
   adm3_name?: string;
   adm4_pcode?: string;
   adm4_name?: string;
+  // Secondary (non-administrative) boundaries, e.g. DRC health zones
+  health_zone_name?: string;
+  health_zone_dhis2?: string;
+  health_zone_id?: string;
   address?: string;
   error?: string;
 }
@@ -30,6 +34,11 @@ export interface PcodeResult {
 export interface AvailableLevels {
   iso2: string;
   levels: number[];
+}
+
+export interface SecondaryTypes {
+  iso2: string;
+  types: string[];
 }
 
 export interface BatchStats {

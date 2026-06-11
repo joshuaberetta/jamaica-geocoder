@@ -88,3 +88,59 @@ def test_resolve_pcodes_mock(mock_db_conn, mock_resolve_pcodes):
     assert result['adm1_pcode'] == 'JM01'
     assert result['adm1_name'] == 'Test Parish'
     assert 'adm3_pcode' not in result   # None values are excluded
+
+
+def _mock_db(rows):
+    """Build a get_db_conn() mock whose cursor.fetchall() returns rows."""
+    mock_cur = MagicMock()
+    mock_cur.fetchall.return_value = rows
+    mock_cur.__enter__ = lambda s: s
+    mock_cur.__exit__ = MagicMock(return_value=False)
+
+    mock_conn = MagicMock()
+    mock_conn.cursor.return_value = mock_cur
+    mock_conn.__enter__ = lambda s: s
+    mock_conn.__exit__ = MagicMock(return_value=False)
+    return mock_conn
+
+
+@patch('geocode.get_db_conn')
+def test_resolve_secondary_boundaries_health(mock_db_conn):
+    """A point inside a DRC health zone yields health_zone_* keys."""
+    from geocode import resolve_secondary_boundaries
+
+    mock_db_conn.return_value = _mock_db([{
+        'boundary_type': 'health',
+        'name': 'Kasaji',
+        'alt_name': None,
+        'ref_dhis2': 'kiFDojGFG3x',
+        'source_id': 'r10731780',
+    }])
+
+    result = resolve_secondary_boundaries(-10.36, 23.45, iso2='CD')
+
+    assert result == {
+        'health_zone_name': 'Kasaji',
+        'health_zone_dhis2': 'kiFDojGFG3x',
+        'health_zone_id': 'r10731780',
+    }
+
+
+@patch('geocode.get_db_conn')
+def test_resolve_secondary_boundaries_none(mock_db_conn):
+    """No matching secondary boundary -> empty dict (safe to merge)."""
+    from geocode import resolve_secondary_boundaries
+
+    mock_db_conn.return_value = _mock_db([])
+
+    assert resolve_secondary_boundaries(18.0, -76.7, iso2='JM') == {}
+
+
+@patch('geocode.get_db_conn')
+def test_resolve_secondary_boundaries_missing_table(mock_db_conn):
+    """A DB error (e.g. table not yet created) degrades to an empty dict."""
+    from geocode import resolve_secondary_boundaries
+
+    mock_db_conn.side_effect = Exception('relation "secondary_boundaries" does not exist')
+
+    assert resolve_secondary_boundaries(18.0, -76.7) == {}

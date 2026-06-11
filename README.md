@@ -86,6 +86,14 @@ docker compose exec geocoder python scripts/ingest.py \
 
 http://localhost:8000
 
+Use the `?country=` query parameter to pre-select a country on load. Accepts ISO2, ISO3, or the lowercase country key (case-insensitive):
+
+```
+http://localhost:8000/?country=FSM
+http://localhost:8000/?country=fsm
+http://localhost:8000/?country=FM
+```
+
 ---
 
 ## Local Development (without rebuilding Docker)
@@ -265,6 +273,52 @@ Also ensure the ISO3 → ISO2 mapping exists in `ISO3_TO_ISO2` (the script will 
 
 ---
 
+## Adding Secondary Boundary Layers (e.g. health zones)
+
+Some countries have **non-administrative** boundary layers that overlap the ADM
+hierarchy rather than nesting into it — for example the DRC's *zones de santé*
+(health zones), each identified by a DHIS2 org-unit ID instead of a P-code. These
+are loaded into a separate `secondary_boundaries` table and merged into geocode
+output as `health_zone_name` / `health_zone_dhis2` / `health_zone_id` fields, in
+addition to the usual `adm*` P-codes. The admin lookup for other countries is
+unaffected (the fields simply don't appear when no secondary boundary matches).
+
+Ingest uses the `--secondary-boundary <type>` flag together with `--file` and
+`--country` (ISO3 — the source file has no country column):
+
+```bash
+# DRC health zones (GeoPackage from HDX / OpenStreetMap RDC)
+docker compose cp data/osm_rdc_sante_zones_211212.gpkg geocoder:/data/
+docker compose exec geocoder python scripts/ingest.py \
+  --file /data/osm_rdc_sante_zones_211212.gpkg \
+  --country COD \
+  --secondary-boundary health
+```
+
+Use the GeoPackage (`.gpkg`), not the shapefile (`.zip`) — the shapefile DBF
+format truncates the `ref:dhis2` field name. The ingest re-creates the table if
+it doesn't exist yet (databases provisioned before this feature), and is
+idempotent: re-running replaces that country + boundary-type's rows.
+
+To support a new secondary dataset, add a field mapping under
+`SECONDARY_FIELD_MAPS` in `scripts/ingest.py` and (if it's a new boundary type) a
+response-key prefix under `SECONDARY_KEY_PREFIX` in `geocode.py`.
+
+A geocode against DRC then returns, for example:
+
+```json
+{
+  "success": true,
+  "country": "Democratic Republic of the Congo",
+  "adm1_name": "Lualaba",
+  "health_zone_name": "Kasaji",
+  "health_zone_dhis2": "kiFDojGFG3x",
+  "health_zone_id": "r10731780"
+}
+```
+
+---
+
 ## API Reference
 
 All endpoints return JSON. Coordinates bypass the Google API — no quota consumed.
@@ -393,7 +447,7 @@ Batch geocode a CSV or Excel file. Login via `POST /login` first (sets a session
 ```json
 {
   "success": true,
-  "stats": { "total": 100, "successful": 95, "failed": 5, "skipped": 0 },
+  "stats": { "geocoded": 95, "not_geocoded": 5, "skipped": 0 },
   "file_data": "<base64-encoded file>",
   "filename": "geocoded_addresses.csv",
   "mimetype": "text/csv"
@@ -407,6 +461,79 @@ Batch geocode a CSV or Excel file. Login via `POST /login` first (sets a session
 ```json
 { "status": "ok", "countries_loaded": 47 }
 ```
+
+---
+
+### `POST /login` — public
+
+Authenticates a session. Required before calling auth-protected endpoints.
+
+**Request** (`application/x-www-form-urlencoded`):
+
+| Field | Description |
+|-------|-------------|
+| `username` | Login username (default: `admin`) |
+| `password` | Login password |
+
+```bash
+curl -c cookies.txt -X POST http://localhost:8000/login \
+  -d "username=admin&password=your-password"
+```
+
+- **Success:** HTTP 302 redirect to `/`; sets a `session` cookie
+- **Failure:** HTTP 401, plain-text body `Invalid username or password`
+
+Pass `-c cookies.txt` to save the cookie and `-b cookies.txt` to send it on subsequent requests.
+
+---
+
+### `POST /logout` — public
+
+Clears the session.
+
+```bash
+curl -b cookies.txt -X POST http://localhost:8000/logout
+```
+
+Returns HTTP 302 redirect to `/`.
+
+---
+
+### `POST /api/cache/clear` — **auth required**
+
+Clears the in-memory countries and boundaries cache and refreshes the `mv_countries` materialized view. Called automatically by `scripts/ingest.py` when `APP_URL` is set.
+
+```bash
+curl -b cookies.txt -X POST http://localhost:8000/api/cache/clear
+```
+
+```json
+{ "status": "ok", "message": "Cache cleared" }
+```
+
+On view-refresh failure:
+
+```json
+{ "status": "error", "message": "Cache cleared but view refresh failed: <details>" }
+```
+
+---
+
+## Error Responses
+
+All endpoints return JSON errors unless otherwise noted. Common patterns:
+
+| Situation | Status | Body |
+|-----------|--------|------|
+| Missing required param | 400 | `{"error": "..."}` |
+| Invalid coordinates | 400 | `{"error": "Invalid latitude or longitude"}` |
+| Not authenticated | 401 | `{"error": "Authentication required"}` |
+| Address not found (GET /geocode) | 404 | `{"success": false, "error": "Could not geocode address"}` |
+| Point outside boundaries (GET /geocode) | 404 | `{"success": false, "error": "Point outside known boundaries"}` |
+| Point outside boundaries (POST endpoints) | 200 | `{"success": false, "error": "Point outside known boundaries"}` |
+| Server error | 500 | `{"error": "..."}` |
+
+> **Note:** `POST /geocode_single` and `POST /reverse_geocode` return HTTP 200 even when geocoding fails — check the `success` field.
 
 ---
 
