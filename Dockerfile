@@ -71,6 +71,7 @@ COPY --from=frontend-build /app/static ./static/
 # Copy application files
 COPY --chown=appuser:appuser geocode.py .
 COPY --chown=appuser:appuser web_app.py .
+COPY --chown=appuser:appuser xlsforms.py .
 COPY --chown=appuser:appuser logos/ ./logos/
 COPY --chown=appuser:appuser scripts/ ./scripts/
 RUN chmod +x scripts/entrypoint.sh
