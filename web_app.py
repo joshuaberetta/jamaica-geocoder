@@ -35,6 +35,7 @@ from geocode import (
     resolve_pcodes,
     resolve_secondary_boundaries,
 )
+import xlsforms
 
 load_dotenv()
 
@@ -459,6 +460,75 @@ def secondary_boundaries_geojson():
 
 
 # ---------------------------------------------------------------------------
+# GET /xlsform  -- download a cascading-select XLSForm for a country (public)
+# ---------------------------------------------------------------------------
+
+
+@app.route("/xlsform")
+def download_xlsform():
+    """
+    Stream a pre-generated KoboCollect XLSForm with cascading admin-boundary
+    select_one questions for a country. Served from disk
+    ({XLSFORM_DIR}/{ISO2}.xlsx); generated on the fly and cached to disk if the
+    file is missing (e.g. a newly ingested country).
+
+    Query params:
+        country  ISO2 code (required)
+    """
+    from flask import Response
+
+    iso2 = request.args.get("country", "").upper()
+    if not iso2:
+        return jsonify({"error": "country parameter required"}), 400
+
+    path = os.path.join(xlsforms.XLSFORM_DIR, f"{iso2}.xlsx")
+    country_name = iso2
+    try:
+        if os.path.exists(path):
+            with open(path, "rb") as f:
+                data = f.read()
+            # Recover a friendlier filename without rebuilding the workbook.
+            try:
+                with get_db_conn() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT country_name FROM mv_countries WHERE iso2 = %s LIMIT 1",
+                            [iso2],
+                        )
+                        row = cur.fetchone()
+                        if row and row[0]:
+                            country_name = row[0]
+            except Exception:
+                pass
+        else:
+            data, country_name = xlsforms.build_xlsform(iso2)
+            try:
+                os.makedirs(xlsforms.XLSFORM_DIR, exist_ok=True)
+                with open(path, "wb") as f:
+                    f.write(data)
+            except OSError:
+                pass  # Read-only dir: still serve the in-memory bytes.
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 404
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+    etag = hashlib.md5(data).hexdigest()
+    if request.headers.get("If-None-Match") == etag:
+        return "", 304
+
+    out_name = f"{iso2} ({country_name}).xlsx"
+    resp = Response(
+        data,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    resp.headers["Content-Disposition"] = f'attachment; filename="{out_name}"'
+    resp.headers["ETag"] = etag
+    resp.headers["Cache-Control"] = "public, max-age=3600"
+    return resp
+
+
+# ---------------------------------------------------------------------------
 # GET /geocode  -- coordinate or address lookup (public)
 # ---------------------------------------------------------------------------
 
@@ -775,6 +845,22 @@ def clear_cache():
             conn.commit()
     except Exception as e:
         return jsonify({"status": "error", "message": f"Cache cleared but view refresh failed: {e}"}), 500
+
+    # Regenerate XLSForms so they track the updated boundary layers. Best-effort:
+    # a generation failure must not fail the cache-clear. Regenerate just the
+    # ingested country if named, otherwise all of them.
+    data = request.get_json(silent=True) if request.is_json else request.form
+    country = (data.get("country", "").upper() if data else "") or None
+    try:
+        if country:
+            xlsforms.generate_one(country)
+        else:
+            xlsforms.generate_all()
+    except Exception as e:
+        return jsonify({
+            "status": "ok",
+            "message": f"Cache cleared; XLSForm regeneration failed: {e}",
+        })
 
     return jsonify({"status": "ok", "message": "Cache cleared"})
 

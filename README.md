@@ -10,6 +10,7 @@ A self-hosted geocoding service backed by [OCHA COD-AB](https://cod.unocha.org/)
 - **Batch CSV/XLSX upload** — auth-protected; download enriched file with P-codes appended
 - **Single address lookup** and **reverse geocode** (click map or POST lat/lon)
 - **Interactive map** — country selector, map-click to geocode, boundary level filter
+- **XLSForm download** — per-country KoboCollect form with cascading admin-boundary `select_one` questions (and health zones where available), generated from the DB
 - **React SPA** — frontend built with React 18, TypeScript, and [Mantine](https://mantine.dev/) v9
 - **REST API** — all endpoints return JSON
 
@@ -346,6 +347,48 @@ A geocode against DRC then returns, for example:
 
 ---
 
+## XLSForms (KoboCollect cascading selects)
+
+The app can generate a [KoboCollect](https://www.kobotoolbox.org/) **XLSForm** per
+country with one cascading `select_one` question per admin level (province →
+district → …) plus, where available, a health-zone select. Choices are sourced
+from the database, so the form mirrors exactly what the geocoder can resolve.
+The UI exposes a **"Download XLSForm"** button under the country selector on the
+Map tab; it downloads `GET /xlsform?country=<ISO2>`.
+
+The form mirrors `data/ahMwxZhoASRpbmSmaTErim.xlsx`:
+
+- **survey** — `select_one level_n` per populated admin level, cascaded with
+  `choice_filter = starts-with(name, ${level_{n-1}})` (P-code prefix). Countries
+  with secondary boundaries get an extra `select_one health_zone` cascaded under
+  the selected province (`choice_filter = adm1=${level_1}`).
+- **choices** — admin rows store the **P-code** as the value (matching the
+  geocoder's `adm{n}_pcode` output); health-zone rows store **`ref_dhis2`**
+  (fallback `source_id`) and carry an `adm1` column assigning each zone to the
+  province it overlaps most (computed via a PostGIS spatial join, since zones
+  have no stored parent P-code).
+
+Forms are **pre-generated to disk** (`$XLSFORM_DIR`, default `/data/xlsforms`)
+since they only change when boundary layers change:
+
+- `scripts/entrypoint.sh` pre-generates all forms at container startup.
+- `POST /api/cache/clear` (called by the ingest script) regenerates them, so a
+  re-ingest flows through automatically.
+- The `/xlsform` endpoint falls back to generating on demand (and caching to
+  disk) for any country whose file isn't present yet.
+
+Generate manually for one or all countries:
+
+```bash
+# All countries into the default dir ($XLSFORM_DIR or /data/xlsforms)
+docker compose exec geocoder python scripts/generate_xlsforms.py
+
+# A single country into a custom dir
+docker compose exec geocoder python scripts/generate_xlsforms.py --country CD --out /tmp/xlsforms
+```
+
+---
+
 ## API Reference
 
 All endpoints return JSON. Coordinates bypass the Google API — no quota consumed.
@@ -514,6 +557,26 @@ Each feature's `properties` carry `name`, `ref_dhis2`, and `source_id`:
 
 ---
 
+### `GET /xlsform` — public
+
+Download a KoboCollect XLSForm for a country with cascading admin-boundary
+`select_one` questions (and a health-zone select where available). Served from
+the pre-generated cache on disk; generated on demand and cached if missing. See
+[XLSForms](#xlsforms-kobocollect-cascading-selects).
+
+| Param | Description |
+|-------|-------------|
+| `country` | ISO2 code (required), e.g. `CD` |
+
+```bash
+curl -OJ "http://localhost:8000/xlsform?country=CD"
+```
+
+Returns the `.xlsx` with a `Content-Disposition: attachment; filename="CD (…)​.xlsx"`
+header. `400` if `country` is missing; `404` if the country has no admin levels.
+
+---
+
 ### `POST /geocode` — **auth required**
 
 Batch geocode a CSV or Excel file. Login via `POST /login` first (sets a session cookie).
@@ -586,7 +649,7 @@ Returns HTTP 302 redirect to `/`.
 
 ### `POST /api/cache/clear` — **auth required**
 
-Clears the in-memory countries, admin-boundaries, and secondary-boundaries caches and refreshes the `mv_countries` materialized view. Called automatically by `scripts/ingest.py` when `APP_URL` is set (including after a `--secondary-boundary` ingest).
+Clears the in-memory countries, admin-boundaries, and secondary-boundaries caches, refreshes the `mv_countries` materialized view, and regenerates the cached XLSForms (best-effort — a generation failure does not fail the request). Pass an optional `country` (ISO2) to regenerate just that country's form instead of all of them. Called automatically by `scripts/ingest.py` when `APP_URL` is set (including after a `--secondary-boundary` ingest).
 
 ```bash
 curl -b cookies.txt -X POST http://localhost:8000/api/cache/clear
@@ -633,6 +696,7 @@ All endpoints return JSON errors unless otherwise noted. Common patterns:
 | `LOGIN_USERNAME` | `admin` | Batch upload username |
 | `LOGIN_PASSWORD` | `admin` | Batch upload password — **change in production** |
 | `FLASK_ENV` | `production` | Set to `development` for debug mode |
+| `XLSFORM_DIR` | `/data/xlsforms` | Directory for pre-generated XLSForms, served by `GET /xlsform` |
 | `APP_URL` | — | Base URL of the running app; if set, ingest script clears the in-memory cache after loading data |
 | `APP_LOGIN_USERNAME` | `admin` | Username used by the ingest script to authenticate the cache-clear request |
 | `APP_LOGIN_PASSWORD` | `admin` | Password used by the ingest script to authenticate the cache-clear request |
