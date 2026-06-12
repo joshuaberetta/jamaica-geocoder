@@ -6,6 +6,7 @@ import { BatchUpload } from '../components/BatchUpload';
 import { CountrySelect } from '../components/CountrySelect';
 import { MapSection } from '../components/MapSection';
 import { SingleAddressLookup } from '../components/SingleAddressLookup';
+import { XlsFormDownload } from '../components/XlsFormDownload';
 import { useCountries } from '../hooks/useCountries';
 import type { Country } from '../api/types';
 
@@ -69,6 +70,9 @@ export function MainPage() {
                 errors when its container DOM node is reused after being destroyed. */}
             <div style={{ display: activeTab === 'map' ? 'block' : 'none', paddingTop: 16 }}>
               <CountrySelect value={selectedCountry?.code ?? null} onChange={handleCountryChange} />
+              <Group justify="flex-end" mt="sm">
+                <XlsFormDownload country={selectedCountry?.code ?? null} />
+              </Group>
               <div style={{ marginTop: 16 }}>
                 <MapSection
                   country={selectedCountry?.code ?? null}

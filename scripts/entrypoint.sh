@@ -107,5 +107,8 @@ with engine.begin() as conn:
         print(f"mv_countries OK ({count} countries).")
 PYEOF
 
+echo "==> Pre-generating XLSForms..."
+python scripts/generate_xlsforms.py || echo "WARNING: XLSForm pre-generation failed; forms will be built on demand."
+
 echo "==> Starting gunicorn..."
 exec gunicorn --bind 0.0.0.0:5000 --timeout 300 --workers 1 web_app:app
