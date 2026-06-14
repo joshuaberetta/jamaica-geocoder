@@ -26,7 +26,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.throttling import ScopedRateThrottle
 
-from geocode import geocode_address, geocode_dataframe
+from scripts.geocode import geocode_address, geocode_dataframe
 from apps.geo.services import resolve_pcodes, resolve_secondary_boundaries
 
 

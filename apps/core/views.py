@@ -19,7 +19,7 @@ from rest_framework.decorators import (
 from rest_framework.permissions import IsAdminUser
 from rest_framework.response import Response
 
-import xlsforms
+from scripts import xlsforms
 
 from apps.geo.cache import clear_geo_caches
 from apps.geo.services import refresh_countries_view

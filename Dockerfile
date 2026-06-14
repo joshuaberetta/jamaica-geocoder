@@ -68,9 +68,7 @@ COPY --from=builder /usr/local/bin /usr/local/bin
 # Copy compiled frontend assets
 COPY --from=frontend-build /app/static ./static/
 
-# Copy application files
-COPY --chown=appuser:appuser geocode.py .
-COPY --chown=appuser:appuser xlsforms.py .
+# Copy application files (geocode.py + xlsforms.py now live in scripts/)
 COPY --chown=appuser:appuser manage.py .
 COPY --chown=appuser:appuser config/ ./config/
 COPY --chown=appuser:appuser apps/ ./apps/

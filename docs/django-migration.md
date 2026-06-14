@@ -26,10 +26,13 @@ apps/
   geocoding/           # /geocode, /geocode_single, /reverse_geocode
   accounts/            # token auth (/api/token, /api/me), ensure_superuser command
   core/                # /health, /api/cache/clear, SPA serving
+scripts/               # package: ingest, geocode, xlsforms, entrypoint, generate_xlsforms
 ```
 
-`web_app.py` (Flask) was removed. `geocode.py` (Google geocoding + pandas) and
-`xlsforms.py` are unchanged and imported by the new apps.
+`web_app.py` (Flask) was removed. The shared modules `scripts/geocode.py`
+(Google geocoding + pandas) and `scripts/xlsforms.py` are unchanged in behaviour;
+`scripts/` is now an importable package and the Django apps import them as
+`scripts.geocode` / `scripts.xlsforms`.
 
 ### Database access
 

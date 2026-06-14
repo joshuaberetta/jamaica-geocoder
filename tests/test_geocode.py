@@ -4,7 +4,7 @@ import geopandas as gpd
 from unittest.mock import patch, MagicMock
 import json
 
-from geocode import parse_coordinates, geocode_dataframe
+from scripts.geocode import parse_coordinates, geocode_dataframe
 
 def test_parse_coordinates_basic():
     # Valid coordinates with period as decimal separator
@@ -35,7 +35,7 @@ def test_parse_coordinates_european_decimal():
     assert abs(lat - (-24.6553835)) < 0.0001
     assert abs(lon - 33.3265245) < 0.0001
 
-@patch('geocode.urlopen')
+@patch('scripts.geocode.urlopen')
 def test_geocode_dataframe_success(mock_urlopen, sample_dataframe, mock_google_api_response):
     mock_response = MagicMock()
     mock_response.read.return_value = json.dumps(mock_google_api_response).encode('utf-8')
@@ -58,10 +58,10 @@ def test_geocode_dataframe_success(mock_urlopen, sample_dataframe, mock_google_a
     assert result_gdf.iloc[0]['longitude'] == -76.567
     assert result_gdf.iloc[1]['geocode_confidence'] == 'COORDINATES'
 
-@patch('geocode.get_db_conn')
+@patch('scripts.geocode.get_db_conn')
 def test_resolve_pcodes_mock(mock_db_conn, mock_resolve_pcodes):
     """resolve_pcodes returns a pcode dict from DB."""
-    from geocode import resolve_pcodes
+    from scripts.geocode import resolve_pcodes
 
     mock_cur = MagicMock()
     mock_cur.fetchone.return_value = {
@@ -104,10 +104,10 @@ def _mock_db(rows):
     return mock_conn
 
 
-@patch('geocode.get_db_conn')
+@patch('scripts.geocode.get_db_conn')
 def test_resolve_secondary_boundaries_health(mock_db_conn):
     """A point inside a DRC health zone yields health_zone_* keys."""
-    from geocode import resolve_secondary_boundaries
+    from scripts.geocode import resolve_secondary_boundaries
 
     mock_db_conn.return_value = _mock_db([{
         'boundary_type': 'health',
@@ -126,20 +126,20 @@ def test_resolve_secondary_boundaries_health(mock_db_conn):
     }
 
 
-@patch('geocode.get_db_conn')
+@patch('scripts.geocode.get_db_conn')
 def test_resolve_secondary_boundaries_none(mock_db_conn):
     """No matching secondary boundary -> empty dict (safe to merge)."""
-    from geocode import resolve_secondary_boundaries
+    from scripts.geocode import resolve_secondary_boundaries
 
     mock_db_conn.return_value = _mock_db([])
 
     assert resolve_secondary_boundaries(18.0, -76.7, iso2='JM') == {}
 
 
-@patch('geocode.get_db_conn')
+@patch('scripts.geocode.get_db_conn')
 def test_resolve_secondary_boundaries_missing_table(mock_db_conn):
     """A DB error (e.g. table not yet created) degrades to an empty dict."""
-    from geocode import resolve_secondary_boundaries
+    from scripts.geocode import resolve_secondary_boundaries
 
     mock_db_conn.side_effect = Exception('relation "secondary_boundaries" does not exist')
 

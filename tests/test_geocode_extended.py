@@ -2,9 +2,9 @@ import pytest
 import pandas as pd
 import json
 from unittest.mock import patch, MagicMock
-from geocode import geocode_address, geocode_dataframe
+from scripts.geocode import geocode_address, geocode_dataframe
 
-@patch('geocode.urlopen')
+@patch('scripts.geocode.urlopen')
 def test_geocode_address_api_failure(mock_urlopen):
     mock_response = MagicMock()
     mock_response.read.return_value = json.dumps({'status': 'ZERO_RESULTS', 'results': []}).encode('utf-8')
@@ -16,7 +16,7 @@ def test_geocode_address_api_failure(mock_urlopen):
 
     assert result is None
 
-@patch('geocode.geocode_address')
+@patch('scripts.geocode.geocode_address')
 def test_geocode_dataframe_failure(mock_geocode_addr):
     mock_geocode_addr.side_effect = [
         (18.123, -76.567, "ROOFTOP"),  # Good Address

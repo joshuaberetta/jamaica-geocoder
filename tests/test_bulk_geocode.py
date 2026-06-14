@@ -17,7 +17,7 @@ import geopandas as gpd
 from shapely.geometry import Point
 from unittest.mock import patch, call
 
-from geocode import geocode_dataframe
+from scripts.geocode import geocode_dataframe
 
 
 # ---------------------------------------------------------------------------
@@ -46,7 +46,7 @@ class TestJamaicaBulkGeocode:
             "18.4762, -77.9220",  # Montego Bay
             "17.9970, -76.8530",  # Portmore
         )
-        with patch("geocode.geocode_address") as mock_api:
+        with patch("scripts.geocode.geocode_address") as mock_api:
             gdf, stats = geocode_dataframe(df, delay=0.0, country_hint="Jamaica")
 
         mock_api.assert_not_called()
@@ -75,7 +75,7 @@ class TestJamaicaBulkGeocode:
             (18.4200, -77.0100, "PLACE"),
             (17.9356, -76.7877, "PLACE"),
         ]
-        with patch("geocode.geocode_address", side_effect=api_returns) as mock_api:
+        with patch("scripts.geocode.geocode_address", side_effect=api_returns) as mock_api:
             gdf, stats = geocode_dataframe(df, delay=0.0, country_hint="Jamaica")
 
         assert mock_api.call_count == 3
@@ -99,7 +99,7 @@ class TestJamaicaBulkGeocode:
             "Gibberish@@##",             # address → API failure
             "",                          # empty → skipped
         )
-        with patch("geocode.geocode_address", side_effect=[
+        with patch("scripts.geocode.geocode_address", side_effect=[
             (17.9910, -76.9571, "SETTLEMENT"),  # Spanish Town
             None,                               # Gibberish
         ]) as mock_api:
@@ -133,7 +133,7 @@ class TestMozambiqueBulkGeocode:
             "-19,8437 34,8388",    # Beira
             "-15,1167 39,2667",    # Nacala
         )
-        with patch("geocode.geocode_address") as mock_api:
+        with patch("scripts.geocode.geocode_address") as mock_api:
             gdf, stats = geocode_dataframe(df, delay=0.0, country_hint="Mozambique")
 
         mock_api.assert_not_called()
@@ -150,7 +150,7 @@ class TestMozambiqueBulkGeocode:
             "-24.6554, 33.3265",   # standard decimal
             "-24,6554 33,3265",    # European decimal
         )
-        with patch("geocode.geocode_address") as mock_api:
+        with patch("scripts.geocode.geocode_address") as mock_api:
             gdf, stats = geocode_dataframe(df, delay=0.0, country_hint="Mozambique")
 
         mock_api.assert_not_called()
@@ -161,7 +161,7 @@ class TestMozambiqueBulkGeocode:
     def test_addresses_with_country_hint(self):
         """Text addresses forward 'Mozambique' as the country_hint."""
         df = _mk_df("Matola", "Nampula Cidade")
-        with patch("geocode.geocode_address", side_effect=[
+        with patch("scripts.geocode.geocode_address", side_effect=[
             (-25.9623, 32.4589, "SETTLEMENT"),
             (-15.1165, 39.2666, "SETTLEMENT"),
         ]) as mock_api:
@@ -189,7 +189,7 @@ class TestHaitiBulkGeocode:
             "Section Communale inconnue",
             "Lieu Dit Inexistant",
         )
-        with patch("geocode.geocode_address", return_value=None):
+        with patch("scripts.geocode.geocode_address", return_value=None):
             gdf, stats = geocode_dataframe(df, delay=0.0, country_hint="Haiti")
 
         assert stats["total"] == 3
@@ -203,7 +203,7 @@ class TestHaitiBulkGeocode:
         df = pd.DataFrame({
             "address": [None, float("nan"), "", "Pétionville"],
         })
-        with patch("geocode.geocode_address", return_value=(18.5122, -72.2894, "SETTLEMENT")):
+        with patch("scripts.geocode.geocode_address", return_value=(18.5122, -72.2894, "SETTLEMENT")):
             gdf, stats = geocode_dataframe(df, delay=0.0, country_hint="Haiti")
 
         assert stats["skipped"] == 3
@@ -217,7 +217,7 @@ class TestHaitiBulkGeocode:
             "18.5433, -72.3395",        # coordinate
             "Nonexistent locality XYZ", # failure
         )
-        with patch("geocode.geocode_address", side_effect=[
+        with patch("scripts.geocode.geocode_address", side_effect=[
             (18.5433, -72.3395, "SETTLEMENT"),
             None,
         ]):
@@ -264,7 +264,7 @@ class TestNigeriaBulkGeocode:
             None,                             # Fake Place
             None,                             # Unknown Area
         ]
-        with patch("geocode.geocode_address", side_effect=api_side_effects):
+        with patch("scripts.geocode.geocode_address", side_effect=api_side_effects):
             gdf, stats = geocode_dataframe(df, delay=0.0, country_hint="Nigeria")
 
         assert stats["total"] == 10
@@ -303,7 +303,7 @@ class TestUkraineBulkGeocode:
             captured_queries.append(query)
             return (49.8397, 24.0297, "PLACE")
 
-        with patch("geocode.geocode_address", side_effect=fake_geocode):
+        with patch("scripts.geocode.geocode_address", side_effect=fake_geocode):
             gdf, stats = geocode_dataframe(df, delay=0.0, country_hint="Ukraine")
 
         assert "Lviv City Council" in captured_queries[0]
@@ -317,7 +317,7 @@ class TestUkraineBulkGeocode:
             "name":    ["Kyiv",   "Kharkiv"],
             "address": ["50,4501 30,5234", "49,9935 36,2304"],
         })
-        with patch("geocode.geocode_address") as mock_api:
+        with patch("scripts.geocode.geocode_address") as mock_api:
             gdf, stats = geocode_dataframe(df, delay=0.0, country_hint="Ukraine")
 
         mock_api.assert_not_called()
@@ -335,7 +335,7 @@ class TestCustomAddressColumn:
 
     def test_custom_column_name(self):
         df = pd.DataFrame({"location": ["18.0061, -76.7447", "Spanish Town"]})
-        with patch("geocode.geocode_address", return_value=(17.9910, -76.9571, "SETTLEMENT")):
+        with patch("scripts.geocode.geocode_address", return_value=(17.9910, -76.9571, "SETTLEMENT")):
             gdf, stats = geocode_dataframe(
                 df, address_column="location", delay=0.0, country_hint="Jamaica"
             )

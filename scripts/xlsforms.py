@@ -22,7 +22,7 @@ import pandas as pd
 import psycopg2
 import psycopg2.extras
 
-from geocode import get_db_conn
+from scripts.geocode import get_db_conn
 
 # Output directory for pre-generated forms. Defaults to /data/xlsforms so the
 # files persist on the mounted data volume across container restarts.

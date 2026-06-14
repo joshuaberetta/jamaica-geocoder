@@ -26,7 +26,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-import xlsforms
+from scripts import xlsforms
 
 
 def main():

@@ -23,7 +23,7 @@ from drf_spectacular.utils import OpenApiParameter, extend_schema
 from rest_framework.decorators import api_view
 from rest_framework.response import Response
 
-import xlsforms
+from scripts import xlsforms
 
 from . import services
 from .cache import cached_json_response
