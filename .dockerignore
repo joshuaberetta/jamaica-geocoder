@@ -28,16 +28,31 @@ ENV/
 .git/
 .gitignore
 
-# Documentation
+# Documentation & planning
 README.md
-DEPLOYMENT.md
-GEOCODING_IMPROVEMENTS.md
+STYLE_GUIDE.md
+docs/
+plans/
+
+# Data files (boundary archives, GeoPackages — ingested at runtime, not built in)
+data/
+*.zip
+*.gdb.zip
+*.gpkg
+
+# Node (frontend builds in its own Docker stage; staticfiles is generated at runtime)
+node_modules/
+frontend/node_modules/
+staticfiles/
 
 # OS
 .DS_Store
 Thumbs.db
 
 # Testing
+tests/
+tests_django/
+pytest.ini
 .pytest_cache/
 .coverage
 htmlcov/
@@ -46,4 +61,5 @@ htmlcov/
 Dockerfile
 .dockerignore
 docker-compose.yml
+docker-compose.override.yml
 .do/

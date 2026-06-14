@@ -74,7 +74,6 @@ COPY --chown=appuser:appuser xlsforms.py .
 COPY --chown=appuser:appuser manage.py .
 COPY --chown=appuser:appuser config/ ./config/
 COPY --chown=appuser:appuser apps/ ./apps/
-COPY --chown=appuser:appuser logos/ ./logos/
 COPY --chown=appuser:appuser scripts/ ./scripts/
 RUN chmod +x scripts/entrypoint.sh
 
