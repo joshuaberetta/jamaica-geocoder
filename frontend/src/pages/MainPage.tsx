@@ -2,6 +2,7 @@ import { Anchor, Button, Container, Group, Paper, Stack, Tabs, Text } from '@man
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { BatchUpload } from '../components/BatchUpload';
+import { BoundaryCsvLists } from '../components/BoundaryCsvLists';
 import { CountrySelect } from '../components/CountrySelect';
 import { MapSection } from '../components/MapSection';
 import { SingleAddressLookup } from '../components/SingleAddressLookup';
@@ -76,6 +77,7 @@ export function MainPage() {
               <Tabs.Tab value="map">Map Picker</Tabs.Tab>
               <Tabs.Tab value="single">Single Lookup</Tabs.Tab>
               <Tabs.Tab value="batch">Batch Processing</Tabs.Tab>
+              <Tabs.Tab value="csv">Boundary CSVs</Tabs.Tab>
             </Tabs.List>
 
             <Tabs.Panel value="single" pt="md">
@@ -102,6 +104,13 @@ export function MainPage() {
 
             <Tabs.Panel value="batch" pt="md">
               <BatchUpload country={null} />
+            </Tabs.Panel>
+
+            <Tabs.Panel value="csv" pt="md">
+              <Stack gap="md">
+                <CountrySelect value={selectedCountry?.code ?? null} onChange={handleCountryChange} />
+                <BoundaryCsvLists country={selectedCountry?.code ?? null} />
+              </Stack>
             </Tabs.Panel>
           </Tabs>
 

@@ -11,6 +11,7 @@ A self-hosted geocoding service backed by [OCHA COD-AB](https://cod.unocha.org/)
 - **Single address lookup** and **reverse geocode** (click map or POST lat/lon)
 - **Interactive map** — country selector, map-click to geocode, boundary level filter
 - **XLSForm download** — per-country KoboCollect form with cascading admin-boundary `select_one` questions (and health zones where available), generated from the DB
+- **Admin-boundary CSV lists** — per-country, per-level `.csv` endpoints (the XLSForm choices) for use as KoboToolbox external choice lists, with optional per-user/project translation columns (`label::Spanish (es)`, …)
 - **Token auth + rate limiting** — DRF token authentication with per-scope request throttling; users managed via the Django admin
 - **React SPA** — frontend built with React 19, TypeScript, and [Mantine](https://mantine.dev/) v9
 - **REST API** — all endpoints return JSON; interactive OpenAPI docs at `/api/docs/`
@@ -34,9 +35,10 @@ The backend is a Django project (`config/`) with apps under `apps/`:
 | `apps.geo` | GeoDjango models for the boundary tables, read/data endpoints (`/countries`, `*.geojson`, `/xlsform`), spatial resolvers |
 | `apps.geocoding` | `/geocode`, `/geocode_single`, `/reverse_geocode` (Google API + P-code resolution) |
 | `apps.accounts` | Token auth (`/api/token`, `/api/me`) and the `ensure_superuser` bootstrap command |
+| `apps.boundary_csv` | Per-country admin-boundary `.csv` lists (`/boundaries/…`) + the boundary-CSV project/translation-column management API |
 | `apps.core` | `/health`, `/api/cache/clear`, and the SPA catch-all |
 
-The boundary tables (`cod_adm`, `secondary_boundaries`) and the `mv_countries` materialized view are owned by `db/schema.sql` + `scripts/ingest.py`; GeoDjango maps them as `managed = False` models, so Django migrations only create its own auth/token/admin/session tables.
+The boundary tables (`cod_adm`, `secondary_boundaries`) and the `mv_countries` materialized view are owned by `db/schema.sql` + `scripts/ingest.py`; GeoDjango maps them as `managed = False` models, so Django migrations only create its own auth/token/admin/session tables — plus the `apps.boundary_csv` project/language tables (the one managed app).
 
 ---
 
@@ -145,7 +147,7 @@ npm install                # first time only
 npm run dev                # listens on http://localhost:5173
 ```
 
-Open http://localhost:5173 in your browser. The Vite dev server proxies all `/api/*`, `/geocode*`, `/countries`, `*.geojson`, `/xlsform`, and `/health` routes to `http://localhost:8000` automatically, so hot-module reloading works while talking to the real backend.
+Open http://localhost:5173 in your browser. The Vite dev server proxies all `/api/*`, `/geocode*`, `/countries`, `*.geojson`, `/boundaries/*`, `/xlsform`, and `/health` routes to `http://localhost:8000` automatically, so hot-module reloading works while talking to the real backend.
 
 ### Building for production manually
 
@@ -621,6 +623,60 @@ curl -OJ "http://localhost:8000/xlsform?country=CD"
 
 Returns the `.xlsx` with a `Content-Disposition: attachment; filename="CD (…)​.xlsx"`
 header. `400` if `country` is missing; `404` if the country has no admin levels.
+
+---
+
+### `GET /boundaries/{ISO2}/{level}.csv` — public
+
+Per-level CSV of a country's admin boundaries — the same `(name, label)` rows
+the XLSForm puts on its `choices` sheet — suitable for use directly as a
+[KoboToolbox external choice list](https://support.kobotoolbox.org/dynamic_data_attachments.html)
+(the URL ends in `.csv` as Kobo requires). Cached on disk-backed cache and
+served with an ETag; throttle-exempt for automated fetches.
+
+| Path segment | Description |
+|--------------|-------------|
+| `ISO2` | Country code, e.g. `JM` (case-insensitive) |
+| `level` | Admin level `1`–`4`, or `health_zone` for the secondary health-zone list |
+
+```bash
+curl -OJ "http://localhost:8000/boundaries/JM/1.csv"     # parishes: name,label
+curl -OJ "http://localhost:8000/boundaries/CD/health_zone.csv"  # name,label,adm1
+```
+
+`404` if the country/level has no rows. Admin-level CSVs have `name,label`;
+health-zone CSVs add an `adm1` cascade column.
+
+#### `GET /boundaries/{username}/{project}/{ISO2}/{level}.csv` — public
+
+The same CSV with **per-project translation columns** appended. A signed-in user
+creates a *boundary-CSV project* and pins one or more XLSForm translation column
+headers (e.g. `label::English (en)`, `label::Spanish (es)`) to it; each appended
+column duplicates the `label` value under its header — a ready-to-translate
+scaffold, unique per user + project. The serve URL itself needs no auth.
+
+```bash
+curl -OJ "http://localhost:8000/boundaries/josh/my-survey/JM/1.csv"
+# name,label,label::English (en),label::Spanish (es)
+# JM01,Kingston,Kingston,Kingston
+```
+
+Projects and their translation columns are managed (token auth, owner-scoped)
+via the **boundary-CSV management API**:
+
+| Method | URL | Description |
+|--------|-----|-------------|
+| `GET` | `/api/boundary-projects/` | List my projects |
+| `POST` | `/api/boundary-projects/` | Create: `{name, slug}` |
+| `GET` | `/api/boundary-projects/{slug}/?country=JM` | Detail; `csv_urls` lists per-level URLs for that country |
+| `DELETE` | `/api/boundary-projects/{slug}/` | Delete a project |
+| `POST` | `/api/boundary-projects/{slug}/languages/` | Add a column: `{header}` |
+| `PATCH` | `/api/boundary-projects/{slug}/languages/{id}/` | Rename a column: `{header}` |
+| `DELETE` | `/api/boundary-projects/{slug}/languages/{id}/` | Remove a column |
+
+The **Boundary CSVs** tab in the web UI lists the default and per-project CSV
+links for the selected country with copy buttons, and (when signed in) lets you
+create projects and add/remove translation columns.
 
 ---
 

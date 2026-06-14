@@ -13,6 +13,7 @@ const proxyRoutes = [
   '/api',
   '/boundaries.geojson',
   '/secondary_boundaries.geojson',
+  '/boundaries',
   '/geocode',
   '/geocode_single',
   '/reverse_geocode',

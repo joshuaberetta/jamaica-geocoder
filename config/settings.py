@@ -72,6 +72,7 @@ INSTALLED_APPS = [
     "apps.geocoding",
     "apps.accounts",
     "apps.core",
+    "apps.boundary_csv",
 ]
 
 MIDDLEWARE = [

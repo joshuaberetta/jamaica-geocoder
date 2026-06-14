@@ -56,3 +56,27 @@ export interface BatchResult {
   mimetype: string;
   error?: string;
 }
+
+// --- Boundary CSV lists ---
+
+export interface BoundaryCsvLanguage {
+  id: number;
+  header: string;
+  order: number;
+}
+
+export interface BoundaryCsvUrl {
+  level: string;
+  url: string;
+}
+
+export interface BoundaryCsvProject {
+  id: number;
+  slug: string;
+  name: string;
+  owner_username: string;
+  languages: BoundaryCsvLanguage[];
+  csv_urls: BoundaryCsvUrl[] | null;
+  created_at: string;
+  updated_at: string;
+}
