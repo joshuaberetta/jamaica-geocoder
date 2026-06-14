@@ -1,12 +1,12 @@
-import { Anchor, Container, Group, Paper, Stack, Tabs, Text } from '@mantine/core';
+import { Anchor, Button, Container, Group, Paper, Stack, Tabs, Text } from '@mantine/core';
 import { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { AppHeader } from '../components/AppHeader';
 import { BatchUpload } from '../components/BatchUpload';
 import { CountrySelect } from '../components/CountrySelect';
 import { MapSection } from '../components/MapSection';
 import { SingleAddressLookup } from '../components/SingleAddressLookup';
 import { XlsFormDownload } from '../components/XlsFormDownload';
+import { useAuth } from '../context/AuthContext';
 import { useCountries } from '../hooks/useCountries';
 import type { Country } from '../api/types';
 
@@ -25,6 +25,7 @@ export function MainPage() {
   const [activeTab, setActiveTab] = useState<string>('map');
   const [searchParams] = useSearchParams();
   const { countries } = useCountries();
+  const { loggedIn } = useAuth();
 
   // Pre-select country from ?country= URL param (matches ISO2, ISO3, or key, case-insensitive)
   useEffect(() => {
@@ -43,17 +44,26 @@ export function MainPage() {
 
   return (
     <div style={{ background: '#f5f6f8', minHeight: '100vh', paddingBottom: 48 }}>
-      <AppHeader />
-
       <Container size="md" pt="xl" pb="xl">
         <Paper withBorder p="xl" radius="md" style={{ background: '#fff' }}>
           <Stack gap="xl">
-          <div>
-            <Text size="xl" fw={700} c="#111827" mb={4}>Humanitarian Geocoder</Text>
-            <Text size="sm" c="dimmed">
-              Enter a single address or upload a CSV file with addresses to geocode and match to administrative boundaries.
-            </Text>
-          </div>
+          <Group justify="space-between" align="flex-start" wrap="nowrap">
+            <div>
+              <Text size="xl" fw={700} c="#111827" mb={4}>Humanitarian Geocoder</Text>
+              <Text size="sm" c="dimmed">
+                Enter a single address or upload a CSV file with addresses to geocode and match to administrative boundaries.
+              </Text>
+            </div>
+            <Button
+              component="a"
+              href={loggedIn ? '/logout' : '/login'}
+              variant="default"
+              size="sm"
+              style={{ flexShrink: 0 }}
+            >
+              {loggedIn ? 'Sign Out' : 'Sign In'}
+            </Button>
+          </Group>
 
           <Tabs value={activeTab} onChange={(v) => v && setActiveTab(v)} variant="outline">
             <Tabs.List>
@@ -69,8 +79,10 @@ export function MainPage() {
             {/* MapSection rendered outside Tabs.Panel so it is never unmounted — Leaflet
                 errors when its container DOM node is reused after being destroyed. */}
             <div style={{ display: activeTab === 'map' ? 'block' : 'none', paddingTop: 16 }}>
-              <CountrySelect value={selectedCountry?.code ?? null} onChange={handleCountryChange} />
-              <Group justify="flex-end" mt="sm">
+              <Group align="flex-end" gap="sm" wrap="nowrap">
+                <div style={{ flex: 1 }}>
+                  <CountrySelect value={selectedCountry?.code ?? null} onChange={handleCountryChange} />
+                </div>
                 <XlsFormDownload country={selectedCountry?.code ?? null} />
               </Group>
               <div style={{ marginTop: 16 }}>

@@ -700,3 +700,9 @@ All endpoints return JSON errors unless otherwise noted. Common patterns:
 | `APP_URL` | — | Base URL of the running app; if set, ingest script clears the in-memory cache after loading data |
 | `APP_LOGIN_USERNAME` | `admin` | Username used by the ingest script to authenticate the cache-clear request |
 | `APP_LOGIN_PASSWORD` | `admin` | Password used by the ingest script to authenticate the cache-clear request |
+
+---
+
+## Credits
+
+- App logo / favicon (`static/logo.svg`): ["Globe Alt 9"](https://www.svgrepo.com/svg/globe-alt) from the [Scarlab Oval Line Icons](https://www.svgrepo.com/collection/scarlab-oval-line-icons/) collection by scarlab, via [SVG Repo](https://www.svgrepo.com/) — MIT License.

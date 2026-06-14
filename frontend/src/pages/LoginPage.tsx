@@ -1,7 +1,6 @@
 import { Alert, Button, Center, Paper, PasswordInput, Stack, Text, TextInput } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { useState } from 'react';
-import { KoboLogo } from '../components/KoboLogo';
 
 export function LoginPage() {
   const [error, setError] = useState<string | null>(null);
@@ -47,8 +46,9 @@ export function LoginPage() {
   return (
     <Center style={{ minHeight: '100vh', background: '#f5f6f8', padding: 20 }}>
       <Paper withBorder p={48} radius="md" style={{ maxWidth: 420, width: '100%', boxShadow: '0 1px 4px rgba(0,0,0,0.06)' }}>
-        <Stack align="center" gap={4} mb="xl">
-          <KoboLogo width={160} />
+        <Stack align="center" gap="sm" mb="xl">
+          <img src="/logo.svg" alt="Humanitarian Geocoder" style={{ width: 64, height: 64 }} />
+          <Text fw={700} size="lg" c="#111827">Humanitarian Geocoder</Text>
         </Stack>
 
         <Text fw={700} size="xl" c="#111827" mb={4}>Sign In</Text>
