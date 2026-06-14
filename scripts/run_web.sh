@@ -17,6 +17,9 @@ else
     source venv/bin/activate
 fi
 
-echo "Starting web app..."
-echo "Open http://localhost:5000 in your browser"
-python web_app.py
+echo "Applying migrations..."
+python manage.py migrate --noinput
+
+echo "Starting Django dev server..."
+echo "Open http://localhost:8000 in your browser"
+python manage.py runserver 0.0.0.0:8000

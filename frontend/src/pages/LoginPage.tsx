@@ -1,10 +1,15 @@
 import { Alert, Button, Center, Paper, PasswordInput, Stack, Text, TextInput } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { login } from '../api/auth';
+import { useAuth } from '../context/AuthContext';
 
 export function LoginPage() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const navigate = useNavigate();
+  const { setLoggedIn } = useAuth();
 
   const form = useForm({
     initialValues: { username: '', password: '' },
@@ -18,24 +23,10 @@ export function LoginPage() {
     setLoading(true);
     setError(null);
     try {
-      const body = new URLSearchParams();
-      body.append('username', values.username);
-      body.append('password', values.password);
-
-      const res = await fetch('/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: body.toString(),
-      });
-
-      if (res.ok) {
-        // Flask redirects to / on success; confirm auth then navigate
-        window.location.href = '/';
-        return;
-      }
-
-      // 401 = invalid credentials
-      setError('Invalid username or password');
+      // Exchange credentials for an API token (stored in localStorage).
+      await login(values.username, values.password);
+      setLoggedIn(true);
+      navigate('/');
     } catch (err) {
       setError((err as Error).message);
     } finally {

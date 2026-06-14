@@ -70,11 +70,16 @@ COPY --from=frontend-build /app/static ./static/
 
 # Copy application files
 COPY --chown=appuser:appuser geocode.py .
-COPY --chown=appuser:appuser web_app.py .
 COPY --chown=appuser:appuser xlsforms.py .
+COPY --chown=appuser:appuser manage.py .
+COPY --chown=appuser:appuser config/ ./config/
+COPY --chown=appuser:appuser apps/ ./apps/
 COPY --chown=appuser:appuser logos/ ./logos/
 COPY --chown=appuser:appuser scripts/ ./scripts/
 RUN chmod +x scripts/entrypoint.sh
+
+# GeoDjango uses the system GDAL/GEOS installed above (via gdal-config).
+ENV DJANGO_SETTINGS_MODULE=config.settings
 
 # Create data directory for boundary files (can be bind-mounted from host)
 RUN mkdir -p /data && chown appuser:appuser /data

@@ -1,7 +1,11 @@
 import type { AvailableLevels, BatchResult, Country, PcodeResult, SecondaryTypes } from './types';
+import { authHeaders } from './auth';
 
 async function request<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
-  const res = await fetch(input, init);
+  const res = await fetch(input, {
+    ...init,
+    headers: { ...authHeaders(), ...(init?.headers ?? {}) },
+  });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
     throw new Error((body as { error?: string }).error ?? `HTTP ${res.status}`);

@@ -5,12 +5,17 @@ shapely
 pyproj
 python-dotenv
 openpyxl
-flask
-flask-cors
-flask-compress
 gunicorn
 psycopg2-binary
 sqlalchemy
 fiona
 hdx-python-api
 pytest
+# --- Django backend (replaces Flask) ---
+django>=5.2,<6.0
+djangorestframework
+django-cors-headers
+drf-spectacular
+whitenoise
+pytest-django
+pytest-cov

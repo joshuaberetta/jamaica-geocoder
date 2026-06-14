@@ -1,6 +1,6 @@
 import { Anchor, Button, Container, Group, Paper, Stack, Tabs, Text } from '@mantine/core';
 import { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { BatchUpload } from '../components/BatchUpload';
 import { CountrySelect } from '../components/CountrySelect';
 import { MapSection } from '../components/MapSection';
@@ -25,7 +25,8 @@ export function MainPage() {
   const [activeTab, setActiveTab] = useState<string>('map');
   const [searchParams] = useSearchParams();
   const { countries } = useCountries();
-  const { loggedIn } = useAuth();
+  const { loggedIn, logout } = useAuth();
+  const navigate = useNavigate();
 
   // Pre-select country from ?country= URL param (matches ISO2, ISO3, or key, case-insensitive)
   useEffect(() => {
@@ -55,8 +56,13 @@ export function MainPage() {
               </Text>
             </div>
             <Button
-              component="a"
-              href={loggedIn ? '/logout' : '/login'}
+              onClick={() => {
+                if (loggedIn) {
+                  logout();
+                } else {
+                  navigate('/login');
+                }
+              }}
               variant="default"
               size="sm"
               style={{ flexShrink: 0 }}

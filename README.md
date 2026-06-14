@@ -7,12 +7,13 @@ A self-hosted geocoding service backed by [OCHA COD-AB](https://cod.unocha.org/)
 - **~80 countries** — powered by the OCHA global COD-AB dataset loaded into PostGIS
 - **Dynamic P-code output** — returns `adm0`–`adm4` pcode/name pairs for however many levels exist for a country
 - **Flexible input** — street addresses (via Google Maps API) and GPS coordinates in the same file
-- **Batch CSV/XLSX upload** — auth-protected; download enriched file with P-codes appended
+- **Batch CSV/XLSX upload** — token-authenticated; download enriched file with P-codes appended
 - **Single address lookup** and **reverse geocode** (click map or POST lat/lon)
 - **Interactive map** — country selector, map-click to geocode, boundary level filter
 - **XLSForm download** — per-country KoboCollect form with cascading admin-boundary `select_one` questions (and health zones where available), generated from the DB
-- **React SPA** — frontend built with React 18, TypeScript, and [Mantine](https://mantine.dev/) v9
-- **REST API** — all endpoints return JSON
+- **Token auth + rate limiting** — DRF token authentication with per-scope request throttling; users managed via the Django admin
+- **React SPA** — frontend built with React 19, TypeScript, and [Mantine](https://mantine.dev/) v9
+- **REST API** — all endpoints return JSON; interactive OpenAPI docs at `/api/docs/`
 
 ---
 
@@ -21,10 +22,21 @@ A self-hosted geocoding service backed by [OCHA COD-AB](https://cod.unocha.org/)
 | Component | Role |
 |-----------|------|
 | **React + TypeScript** | SPA frontend (Vite, Mantine v9, react-leaflet) |
-| **Flask** | Web server, REST API, and SPA static file host |
-| **PostGIS** | Spatial boundary storage and `ST_Contains` P-code lookup |
+| **Django + DRF** | Web server, REST API, token auth + throttling, and SPA static file host |
+| **GeoDjango / PostGIS** | Spatial boundary storage and `ST_Contains` P-code lookup |
 | **Google Maps API** | Address → lat/lon geocoding (coordinates bypass this) |
 | **scripts/ingest.py** | One-time/incremental COD-AB data loader |
+
+The backend is a Django project (`config/`) with apps under `apps/`:
+
+| App | Responsibility |
+|-----|----------------|
+| `apps.geo` | GeoDjango models for the boundary tables, read/data endpoints (`/countries`, `*.geojson`, `/xlsform`), spatial resolvers |
+| `apps.geocoding` | `/geocode`, `/geocode_single`, `/reverse_geocode` (Google API + P-code resolution) |
+| `apps.accounts` | Token auth (`/api/token`, `/api/me`) and the `ensure_superuser` bootstrap command |
+| `apps.core` | `/health`, `/api/cache/clear`, and the SPA catch-all |
+
+The boundary tables (`cod_adm`, `secondary_boundaries`) and the `mv_countries` materialized view are owned by `db/schema.sql` + `scripts/ingest.py`; GeoDjango maps them as `managed = False` models, so Django migrations only create its own auth/token/admin/session tables.
 
 ---
 
@@ -47,8 +59,13 @@ Edit `.env` and set at minimum:
 ```ini
 POSTGRES_PASSWORD=choose-a-strong-password
 GOOGLE_MAPS_API_KEY=your-google-api-key
-LOGIN_PASSWORD=choose-a-strong-password
+DJANGO_SUPERUSER_PASSWORD=choose-a-strong-password
+SECRET_KEY=a-random-secret-string
 ```
+
+On startup the container creates/updates a Django superuser from
+`DJANGO_SUPERUSER_USERNAME` (default `admin`) / `DJANGO_SUPERUSER_PASSWORD` and
+mints an API token for it — this replaces the old hardcoded login.
 
 ### 2. Start the stack
 
@@ -60,7 +77,7 @@ The `--build` step compiles the React frontend in a Node 20 stage and copies the
 
 This starts:
 - **db** — PostGIS 16 (internal only — not exposed to the host; access via `docker compose exec db psql -U geocode`)
-- **geocoder** — Flask app on port 8000 (serves both the API and the compiled SPA)
+- **geocoder** — Django app (gunicorn) on port 8000 (serves both the API and the compiled SPA)
 
 ### 3. Load boundary data
 
@@ -99,17 +116,27 @@ http://localhost:8000/?country=FM
 
 ## Local Development (without rebuilding Docker)
 
-Two processes are needed: the Flask API and the Vite dev server.
+Two processes are needed: the Django API and the Vite dev server.
 
 ```bash
-# Terminal 1 — start the database, then run Flask
+# Terminal 1 — start the database, then run Django
 docker compose up db -d
 
 python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-python web_app.py          # listens on http://localhost:5001
+
+export DATABASE_URL=postgresql://geocode:<POSTGRES_PASSWORD>@localhost:5432/geocode
+python manage.py migrate                    # creates auth/token tables
+DJANGO_SUPERUSER_PASSWORD=dev python manage.py ensure_superuser   # admin user + token
+python manage.py runserver 0.0.0.0:8000     # listens on http://localhost:8000
 ```
+
+> For local dev against the Dockerised DB, enable the host port mapping by keeping
+> `docker-compose.override.yml` (publishes Postgres on `5432`). On a machine without
+> a system GDAL/GEOS, Django auto-discovers the libraries bundled in the
+> `fiona`/`shapely` wheels (see `config/settings.py`); set `GDAL_LIBRARY_PATH` /
+> `GEOS_LIBRARY_PATH` explicitly if discovery fails.
 
 ```bash
 # Terminal 2 — run the Vite dev server
@@ -118,7 +145,7 @@ npm install                # first time only
 npm run dev                # listens on http://localhost:5173
 ```
 
-Open http://localhost:5173 in your browser. The Vite dev server proxies all `/api/*`, `/geocode*`, `/countries`, `/login`, `/logout`, and other Flask routes to `http://localhost:5001` automatically, so hot-module reloading works while talking to the real backend.
+Open http://localhost:5173 in your browser. The Vite dev server proxies all `/api/*`, `/geocode*`, `/countries`, `*.geojson`, `/xlsform`, and `/health` routes to `http://localhost:8000` automatically, so hot-module reloading works while talking to the real backend.
 
 ### Building for production manually
 
@@ -126,7 +153,7 @@ Open http://localhost:5173 in your browser. The Vite dev server proxies all `/ap
 cd frontend && npm run build
 ```
 
-This compiles TypeScript and outputs the SPA assets to `static/`. Flask's catch-all route then serves `static/index.html` for all non-API paths.
+This compiles TypeScript and outputs the SPA assets to `static/`. Django's catch-all route serves `static/index.html` for all non-API paths (WhiteNoise serves the hashed `assets/`).
 
 ---
 
@@ -171,11 +198,16 @@ User=geocoder
 WorkingDirectory=/home/geocoder/humanitarian-geocoder
 EnvironmentFile=/home/geocoder/humanitarian-geocoder/.env
 ExecStart=/home/geocoder/humanitarian-geocoder/venv/bin/gunicorn \
-    --workers 3 --bind unix:geocoder.sock -m 007 web_app:app
+    --workers 3 --bind unix:geocoder.sock -m 007 config.wsgi:application
 
 [Install]
 WantedBy=multi-user.target
 ```
+
+> Run `python manage.py migrate` and `python manage.py collectstatic --noinput` once
+> before starting the service. **With more than one worker, set `REDIS_URL`** so the
+> cache-clear-on-ingest reaches every worker (the default in-memory cache is
+> per-process); otherwise keep `--workers 1`.
 
 ---
 
@@ -199,12 +231,18 @@ After every ingest run the script automatically:
 1. Refreshes the `mv_countries` materialized view (the source for the country dropdown)
 2. Calls `POST /api/cache/clear` on the running app if `APP_URL` is set — so the country list updates immediately without a restart
 
-Set `APP_URL` in your `.env` to enable step 2. When running via `docker compose exec` the script runs inside the container, so use the internal Flask port:
+Set `APP_URL` in your `.env` to enable step 2. The script authenticates the
+cache-clear request with an admin **API token** (`APP_API_TOKEN`); if that isn't
+set it falls back to `APP_LOGIN_USERNAME`/`APP_LOGIN_PASSWORD` → `POST /api/token`.
+When running via `docker compose exec` the script runs inside the container, so
+use the internal gunicorn port:
 
 ```ini
 APP_URL=http://localhost:5000
-# APP_LOGIN_USERNAME=admin  # defaults to admin
-# APP_LOGIN_PASSWORD=...    # defaults to LOGIN_PASSWORD if not set separately
+APP_API_TOKEN=<admin token printed by `manage.py ensure_superuser`>
+# Fallback if no token is set:
+# APP_LOGIN_USERNAME=admin
+# APP_LOGIN_PASSWORD=...
 ```
 
 > If you run the script from the host instead, use `APP_URL=http://localhost:8000` (the host-mapped port).
@@ -330,7 +368,7 @@ unaffected.
 
 To support a new secondary dataset, add a field mapping under
 `SECONDARY_FIELD_MAPS` in `scripts/ingest.py` and (if it's a new boundary type) a
-response-key prefix under `SECONDARY_KEY_PREFIX` in `geocode.py`.
+response-key prefix under `SECONDARY_KEY_PREFIX` in `apps/geo/services.py`.
 
 A geocode against DRC then returns, for example:
 
@@ -392,6 +430,15 @@ docker compose exec geocoder python scripts/generate_xlsforms.py --country CD --
 ## API Reference
 
 All endpoints return JSON. Coordinates bypass the Google API — no quota consumed.
+
+Interactive OpenAPI docs are served at **`/api/docs/`** (Swagger UI) and
+**`/api/redoc/`**; the raw schema is at `/api/schema/`.
+
+**Authentication.** Protected endpoints use DRF **token auth**: obtain a token from
+`POST /api/token`, then send it as an `Authorization: Token <token>` header.
+All endpoints are **rate-limited** (per-scope throttling); the geocoding endpoints
+that call the paid Google API have a tighter `geocode` scope, and batch upload a
+`batch` scope.
 
 ### `GET /countries` — public
 
@@ -579,7 +626,8 @@ header. `400` if `country` is missing; `404` if the country has no admin levels.
 
 ### `POST /geocode` — **auth required**
 
-Batch geocode a CSV or Excel file. Login via `POST /login` first (sets a session cookie).
+Batch geocode a CSV or Excel file. Obtain a token via `POST /api/token` first and
+send it as `Authorization: Token <token>`.
 
 **Request** (multipart form):
 
@@ -607,52 +655,61 @@ Batch geocode a CSV or Excel file. Login via `POST /login` first (sets a session
 ### `GET /health` — public
 
 ```json
-{ "status": "ok", "countries_loaded": 47 }
+{ "status": "ok", "countries_in_db": 47 }
 ```
 
 ---
 
-### `POST /login` — public
+### `POST /api/token` — public
 
-Authenticates a session. Required before calling auth-protected endpoints.
+Exchange username/password for an API token. Required before calling
+auth-protected endpoints.
 
-**Request** (`application/x-www-form-urlencoded`):
+**Request** (JSON or form):
 
 | Field | Description |
 |-------|-------------|
-| `username` | Login username (default: `admin`) |
-| `password` | Login password |
+| `username` | User name (bootstrap default: `admin`) |
+| `password` | Password |
 
 ```bash
-curl -c cookies.txt -X POST http://localhost:8000/login \
-  -d "username=admin&password=your-password"
+curl -X POST http://localhost:8000/api/token \
+  -H "Content-Type: application/json" \
+  -d '{"username": "admin", "password": "your-password"}'
 ```
 
-- **Success:** HTTP 302 redirect to `/`; sets a `session` cookie
-- **Failure:** HTTP 401, plain-text body `Invalid username or password`
+- **Success:** HTTP 200, `{"token": "<token>"}`
+- **Failure:** HTTP 400 with field errors
 
-Pass `-c cookies.txt` to save the cookie and `-b cookies.txt` to send it on subsequent requests.
+Use the token on subsequent requests: `-H "Authorization: Token <token>"`.
 
 ---
 
-### `POST /logout` — public
+### `GET /api/me` — **auth required**
 
-Clears the session.
+Returns the authenticated user (the SPA uses this to confirm a stored token is
+still valid). Replaces the old session-state check.
 
 ```bash
-curl -b cookies.txt -X POST http://localhost:8000/logout
+curl http://localhost:8000/api/me -H "Authorization: Token <token>"
 ```
 
-Returns HTTP 302 redirect to `/`.
+```json
+{ "logged_in": true, "username": "admin", "is_staff": true, "is_superuser": true }
+```
+
+> There is no logout endpoint — "logging out" simply means the client discards
+> its token.
 
 ---
 
-### `POST /api/cache/clear` — **auth required**
+### `POST /api/cache/clear` — **admin auth required**
 
-Clears the in-memory countries, admin-boundaries, and secondary-boundaries caches, refreshes the `mv_countries` materialized view, and regenerates the cached XLSForms (best-effort — a generation failure does not fail the request). Pass an optional `country` (ISO2) to regenerate just that country's form instead of all of them. Called automatically by `scripts/ingest.py` when `APP_URL` is set (including after a `--secondary-boundary` ingest).
+Clears the cached countries, admin-boundaries, and secondary-boundaries responses, refreshes the `mv_countries` materialized view, and regenerates the cached XLSForms (best-effort — a generation failure does not fail the request). Pass an optional `country` (ISO2) to regenerate just that country's form instead of all of them. Requires an **admin** token. Called automatically by `scripts/ingest.py` when `APP_URL` is set (including after a `--secondary-boundary` ingest).
 
 ```bash
-curl -b cookies.txt -X POST http://localhost:8000/api/cache/clear
+curl -X POST http://localhost:8000/api/cache/clear \
+  -H "Authorization: Token <admin-token>"
 ```
 
 ```json
@@ -675,7 +732,9 @@ All endpoints return JSON errors unless otherwise noted. Common patterns:
 |-----------|--------|------|
 | Missing required param | 400 | `{"error": "..."}` |
 | Invalid coordinates | 400 | `{"error": "Invalid latitude or longitude"}` |
-| Not authenticated | 401 | `{"error": "Authentication required"}` |
+| Not authenticated | 401 | `{"detail": "Authentication credentials were not provided."}` |
+| Authenticated but not admin (cache clear) | 403 | `{"detail": "You do not have permission..."}` |
+| Rate limit exceeded | 429 | `{"detail": "Request was throttled. Expected available in N seconds."}` |
 | Address not found (GET /geocode) | 404 | `{"success": false, "error": "Could not geocode address"}` |
 | Point outside boundaries (GET /geocode) | 404 | `{"success": false, "error": "Point outside known boundaries"}` |
 | Point outside boundaries (POST endpoints) | 200 | `{"success": false, "error": "Point outside known boundaries"}` |
@@ -692,14 +751,21 @@ All endpoints return JSON errors unless otherwise noted. Common patterns:
 | `DATABASE_URL` | — | PostgreSQL connection string (required) |
 | `GOOGLE_MAPS_API_KEY` | — | Google Maps / Geocoding API key (required for address lookups) |
 | `POSTGRES_PASSWORD` | — | Password for the `geocode` DB user (used by docker-compose) |
-| `SECRET_KEY` | dev key | Flask session secret — **change in production** |
-| `LOGIN_USERNAME` | `admin` | Batch upload username |
-| `LOGIN_PASSWORD` | `admin` | Batch upload password — **change in production** |
-| `FLASK_ENV` | `production` | Set to `development` for debug mode |
+| `SECRET_KEY` | dev key | Django secret key — **change in production** |
+| `DJANGO_SUPERUSER_USERNAME` | `admin` | Bootstrap admin username (created/updated on startup) |
+| `DJANGO_SUPERUSER_PASSWORD` | — | Bootstrap admin password; if unset, no superuser is created — **set in production** |
+| `DJANGO_SUPERUSER_EMAIL` | — | Optional bootstrap admin email |
+| `DJANGO_DEBUG` | `false` | Set to `true` for debug mode |
+| `ALLOWED_HOSTS` | `*` | Comma-separated allowed hostnames |
+| `CORS_ALLOWED_ORIGINS` | `http://localhost:5173` | Comma-separated origins allowed for cross-origin requests (Vite dev server) |
+| `REDIS_URL` | — | If set, uses Redis for caching (required when running >1 worker) |
+| `THROTTLE_ANON` / `THROTTLE_USER` | `120/min` / `600/min` | DRF rate limits for anonymous / authenticated requests |
+| `THROTTLE_GEOCODE` / `THROTTLE_BATCH` | `30/min` / `5/min` | Rate limits for the Google-API and batch-upload scopes |
 | `XLSFORM_DIR` | `/data/xlsforms` | Directory for pre-generated XLSForms, served by `GET /xlsform` |
-| `APP_URL` | — | Base URL of the running app; if set, ingest script clears the in-memory cache after loading data |
-| `APP_LOGIN_USERNAME` | `admin` | Username used by the ingest script to authenticate the cache-clear request |
-| `APP_LOGIN_PASSWORD` | `admin` | Password used by the ingest script to authenticate the cache-clear request |
+| `APP_URL` | — | Base URL of the running app; if set, ingest script clears the cache after loading data |
+| `APP_API_TOKEN` | — | Admin API token the ingest script uses to authenticate the cache-clear request |
+| `APP_LOGIN_USERNAME` | `admin` | Fallback username (→ `/api/token`) if `APP_API_TOKEN` is unset |
+| `APP_LOGIN_PASSWORD` | `admin` | Fallback password (→ `/api/token`) if `APP_API_TOKEN` is unset |
 
 ---
 

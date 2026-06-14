@@ -110,5 +110,16 @@ PYEOF
 echo "==> Pre-generating XLSForms..."
 python scripts/generate_xlsforms.py || echo "WARNING: XLSForm pre-generation failed; forms will be built on demand."
 
+echo "==> Applying Django migrations (auth + token tables)..."
+# The managed=False boundary tables/view are owned by db/schema.sql + ingest.py;
+# these migrations only create Django's own auth/token/admin/session tables.
+python manage.py migrate --noinput
+
+echo "==> Bootstrapping admin user from env (if DJANGO_SUPERUSER_PASSWORD set)..."
+python manage.py ensure_superuser || echo "WARNING: superuser bootstrap skipped/failed."
+
+echo "==> Collecting static assets..."
+python manage.py collectstatic --noinput || echo "WARNING: collectstatic failed."
+
 echo "==> Starting gunicorn..."
-exec gunicorn --bind 0.0.0.0:5000 --timeout 300 --workers 1 web_app:app
+exec gunicorn --bind 0.0.0.0:5000 --timeout 300 --workers 1 config.wsgi:application

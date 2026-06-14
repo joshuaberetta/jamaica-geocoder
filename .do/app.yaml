@@ -21,15 +21,18 @@ services:
       - key: SECRET_KEY
         scope: RUN_TIME
         type: SECRET
-      - key: LOGIN_USERNAME
+      - key: DJANGO_SUPERUSER_USERNAME
         scope: RUN_TIME
         value: "admin"
-      - key: LOGIN_PASSWORD
+      - key: DJANGO_SUPERUSER_PASSWORD
         scope: RUN_TIME
         type: SECRET
-      - key: FLASK_ENV
+      - key: DJANGO_DEBUG
         scope: RUN_TIME
-        value: "production"
+        value: "false"
+      - key: ALLOWED_HOSTS
+        scope: RUN_TIME
+        value: "*"
     
     health_check:
       http_path: /health

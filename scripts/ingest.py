@@ -815,23 +815,38 @@ def main():
 
 
 def _notify_app(app_url: str) -> None:
-    """Log in to the running app and call POST /api/cache/clear."""
-    username = os.environ.get("APP_LOGIN_USERNAME", "admin")
-    password = os.environ.get("APP_LOGIN_PASSWORD", "admin")
+    """Call POST /api/cache/clear on the running app using an admin API token.
+
+    The token is supplied via APP_API_TOKEN (mint one with
+    `manage.py ensure_superuser`). Falls back to APP_LOGIN_* -> /api/token if no
+    token is set, for convenience in dev.
+    """
+    token = os.environ.get("APP_API_TOKEN")
+    if not token:
+        username = os.environ.get("APP_LOGIN_USERNAME", "admin")
+        password = os.environ.get("APP_LOGIN_PASSWORD", "admin")
+        try:
+            resp = requests.post(
+                f"{app_url}/api/token",
+                json={"username": username, "password": password},
+                timeout=10,
+            )
+            if resp.ok:
+                token = resp.json().get("token")
+            else:
+                print(f"  WARNING: Token obtain returned HTTP {resp.status_code} — cache not cleared.")
+                return
+        except requests.RequestException as e:
+            print(f"  WARNING: Could not reach app at {app_url}: {e}")
+            return
 
     print(f"\nClearing app cache at {app_url}...")
-    session = requests.Session()
     try:
-        login = session.post(
-            f"{app_url}/login",
-            data={"username": username, "password": password},
+        resp = requests.post(
+            f"{app_url}/api/cache/clear",
+            headers={"Authorization": f"Token {token}"},
             timeout=10,
-            allow_redirects=False,
         )
-        if login.status_code not in (200, 302):
-            print(f"  WARNING: Login returned HTTP {login.status_code} — cache not cleared.")
-            return
-        resp = session.post(f"{app_url}/api/cache/clear", timeout=10)
         if resp.ok:
             print("  App cache cleared.")
         else:
