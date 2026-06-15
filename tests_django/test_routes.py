@@ -185,43 +185,43 @@ def test_xlsform_unknown_country_404(api):
 # GET /geocode
 # ---------------------------------------------------------------------------
 
-def test_geocode_get_requires_params(api):
-    assert api.get("/geocode").status_code == 400
+def test_geocode_get_requires_params(auth_api):
+    assert auth_api.get("/geocode").status_code == 400
 
 
-def test_geocode_get_invalid_coords(api):
-    assert api.get("/geocode?lat=abc&lon=def").status_code == 400
+def test_geocode_get_invalid_coords(auth_api):
+    assert auth_api.get("/geocode?lat=abc&lon=def").status_code == 400
 
 
-def test_geocode_get_by_coords(api, pcode_result):
+def test_geocode_get_by_coords(auth_api, pcode_result):
     with patch("apps.geocoding.views.resolve_pcodes", return_value=pcode_result), \
          patch("apps.geocoding.views.resolve_secondary_boundaries", return_value={}):
-        r = api.get("/geocode?lat=18.0&lon=-76.7&country=JM")
+        r = auth_api.get("/geocode?lat=18.0&lon=-76.7&country=JM")
     assert r.status_code == 200
     data = r.json()
     assert data["success"] is True
     assert data["adm1_pcode"] == "JM01"
 
 
-def test_geocode_get_outside_boundaries_404(api):
+def test_geocode_get_outside_boundaries_404(auth_api):
     with patch("apps.geocoding.views.resolve_pcodes", return_value=None):
-        r = api.get("/geocode?lat=0.1&lon=0.1")
+        r = auth_api.get("/geocode?lat=0.1&lon=0.1")
     assert r.status_code == 404
     assert r.json()["success"] is False
 
 
-def test_geocode_get_by_address(api, pcode_result):
+def test_geocode_get_by_address(auth_api, pcode_result):
     with patch("apps.geocoding.views.geocode_address", return_value=(18.0, -76.7, "SETTLEMENT")), \
          patch("apps.geocoding.views.resolve_pcodes", return_value=pcode_result), \
          patch("apps.geocoding.views.resolve_secondary_boundaries", return_value={}):
-        r = api.get("/geocode?address=Kingston")
+        r = auth_api.get("/geocode?address=Kingston")
     assert r.status_code == 200
     assert r.json()["confidence"] == "SETTLEMENT"
 
 
-def test_geocode_get_address_unresolvable_404(api):
+def test_geocode_get_address_unresolvable_404(auth_api):
     with patch("apps.geocoding.views.geocode_address", return_value=None):
-        r = api.get("/geocode?address=Nowhere")
+        r = auth_api.get("/geocode?address=Nowhere")
     assert r.status_code == 404
 
 
@@ -229,16 +229,16 @@ def test_geocode_get_address_unresolvable_404(api):
 # POST /geocode_single
 # ---------------------------------------------------------------------------
 
-def test_geocode_single_missing_address(api):
-    assert api.post("/geocode_single", {}, format="json").status_code == 400
-    assert api.post("/geocode_single", {"address": ""}, format="json").status_code == 400
+def test_geocode_single_missing_address(auth_api):
+    assert auth_api.post("/geocode_single", {}, format="json").status_code == 400
+    assert auth_api.post("/geocode_single", {"address": ""}, format="json").status_code == 400
 
 
-def test_geocode_single_success(api, pcode_result):
+def test_geocode_single_success(auth_api, pcode_result):
     with patch("apps.geocoding.views.geocode_address", return_value=(18.123, -76.567, "ROOFTOP")), \
          patch("apps.geocoding.views.resolve_pcodes", return_value=pcode_result), \
          patch("apps.geocoding.views.resolve_secondary_boundaries", return_value={}):
-        r = api.post("/geocode_single", {"address": "Test", "country": "JM"}, format="json")
+        r = auth_api.post("/geocode_single", {"address": "Test", "country": "JM"}, format="json")
     assert r.status_code == 200
     data = r.json()
     assert data["success"] is True
@@ -246,9 +246,9 @@ def test_geocode_single_success(api, pcode_result):
     assert data["adm1_name"] == "Test Parish"
 
 
-def test_geocode_single_geocoding_failure(api):
+def test_geocode_single_geocoding_failure(auth_api):
     with patch("apps.geocoding.views.geocode_address", return_value=None):
-        r = api.post("/geocode_single", {"address": "Nowhere"}, format="json")
+        r = auth_api.post("/geocode_single", {"address": "Nowhere"}, format="json")
     assert r.status_code == 200
     data = r.json()
     assert data["success"] is False
@@ -259,34 +259,34 @@ def test_geocode_single_geocoding_failure(api):
 # POST /reverse_geocode
 # ---------------------------------------------------------------------------
 
-def test_reverse_geocode_requires_coords(api):
-    assert api.post("/reverse_geocode", {}, format="json").status_code == 400
+def test_reverse_geocode_requires_coords(auth_api):
+    assert auth_api.post("/reverse_geocode", {}, format="json").status_code == 400
 
 
-def test_reverse_geocode_invalid_coords(api):
-    r = api.post("/reverse_geocode", {"latitude": "x", "longitude": "y"}, format="json")
+def test_reverse_geocode_invalid_coords(auth_api):
+    r = auth_api.post("/reverse_geocode", {"latitude": "x", "longitude": "y"}, format="json")
     assert r.status_code == 400
 
 
-def test_reverse_geocode_success(api, pcode_result):
+def test_reverse_geocode_success(auth_api, pcode_result):
     with patch("apps.geocoding.views.resolve_pcodes", return_value=pcode_result), \
          patch("apps.geocoding.views.resolve_secondary_boundaries", return_value={}):
-        r = api.post("/reverse_geocode", {"latitude": 18.0, "longitude": -76.7}, format="json")
+        r = auth_api.post("/reverse_geocode", {"latitude": 18.0, "longitude": -76.7}, format="json")
     assert r.status_code == 200
     assert r.json()["adm1_name"] == "Test Parish"
 
 
-def test_reverse_geocode_outside_boundaries(api):
+def test_reverse_geocode_outside_boundaries(auth_api):
     with patch("apps.geocoding.views.resolve_pcodes", return_value=None):
-        r = api.post("/reverse_geocode", {"latitude": 5.0, "longitude": -1.0}, format="json")
+        r = auth_api.post("/reverse_geocode", {"latitude": 5.0, "longitude": -1.0}, format="json")
     assert r.status_code == 200          # 200 with success=False (matches Flask)
     assert r.json()["success"] is False
 
 
-def test_reverse_geocode_zero_coordinate_rejected(api):
+def test_reverse_geocode_zero_coordinate_rejected(auth_api):
     """KNOWN BUG carried over from Flask: `latitude or lat` treats 0.0 as missing.
     Pinned so the port reproduces it deliberately. See plan Phase 6."""
-    r = api.post("/reverse_geocode", {"latitude": 0, "longitude": 0}, format="json")
+    r = auth_api.post("/reverse_geocode", {"latitude": 0, "longitude": 0}, format="json")
     assert r.status_code == 400
 
 

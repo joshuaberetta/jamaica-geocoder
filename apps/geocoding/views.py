@@ -1,9 +1,9 @@
 """
-Geocoding endpoints ported from web_app.py:
-    GET  /geocode            (public, throttled — hits the paid Google API)
+Geocoding endpoints ported from web_app.py (all require token auth):
+    GET  /geocode            (token auth, throttled — hits the paid Google API)
     POST /geocode            (token auth — CSV/XLSX batch upload)
-    POST /geocode_single     (public, throttled)
-    POST /reverse_geocode    (public, throttled)
+    POST /geocode_single     (token auth, throttled)
+    POST /reverse_geocode    (token auth, throttled)
 
 The Google-API + pandas helpers (geocode_address, geocode_dataframe) are reused
 unchanged from the top-level geocode.py module.
@@ -54,7 +54,7 @@ def _country_hint(iso2, table="mv_countries"):
 
 
 @extend_schema(
-    description="GET: resolve P-codes from lat/lon or address (public). "
+    description="GET: resolve P-codes from lat/lon or address (token auth required). "
                 "POST: CSV/XLSX batch upload (token auth required).",
     parameters=[
         OpenApiParameter("lat", OpenApiTypes.NUMBER, OpenApiParameter.QUERY),
@@ -66,14 +66,15 @@ def _country_hint(iso2, table="mv_countries"):
 )
 @api_view(["GET", "POST"])
 def geocode(request):
-    """Dispatch /geocode by method: GET = single lookup (public), POST = batch
-    upload (token auth). Django routes by path only, so both live on one view."""
+    """Dispatch /geocode by method: GET = single lookup, POST = batch upload.
+    Both require token auth. Django routes by path only, so both live on one view."""
     if request.method == "POST":
         return geocode_batch(request._request)
     return geocode_get(request._request)
 
 
 @api_view(["GET"])
+@permission_classes([IsAuthenticated])
 @throttle_classes([GeocodeThrottle])
 def geocode_get(request):
     """Resolve P-codes from coordinates or a free-text address."""
@@ -216,6 +217,7 @@ def geocode_batch(request):
 @extend_schema(request=OpenApiTypes.OBJECT, responses=OpenApiTypes.OBJECT,
                description="Geocode a single address; body: {address, country?}.")
 @api_view(["POST"])
+@permission_classes([IsAuthenticated])
 @throttle_classes([GeocodeThrottle])
 def geocode_single(request):
     """Geocode a single address or coordinate string."""
@@ -251,6 +253,7 @@ def geocode_single(request):
 @extend_schema(request=OpenApiTypes.OBJECT, responses=OpenApiTypes.OBJECT,
                description="Resolve P-codes from a point; body: {latitude, longitude, country?}.")
 @api_view(["POST"])
+@permission_classes([IsAuthenticated])
 @throttle_classes([GeocodeThrottle])
 def reverse_geocode(request):
     """Resolve P-codes from a latitude/longitude coordinate."""

@@ -8,7 +8,7 @@ A self-hosted geocoding service backed by [OCHA COD-AB](https://cod.unocha.org/)
 - **Dynamic P-code output** — returns `adm0`–`adm4` pcode/name pairs for however many levels exist for a country
 - **Flexible input** — street addresses (via Google Maps API) and GPS coordinates in the same file
 - **Batch CSV/XLSX upload** — token-authenticated; download enriched file with P-codes appended
-- **Single address lookup** and **reverse geocode** (click map or POST lat/lon)
+- **Single address lookup** and **reverse geocode** (click map or POST lat/lon) — token-authenticated
 - **Interactive map** — country selector, map-click to geocode, boundary level filter
 - **XLSForm download** — per-country KoboCollect form with cascading admin-boundary `select_one` questions (and health zones where available), generated from the DB
 - **Admin-boundary CSV lists** — per-country, per-level `.csv` endpoints (the XLSForm choices) for use as KoboToolbox external choice lists, with optional per-user/project translation columns (`label::Spanish (es)`, …)
@@ -438,9 +438,12 @@ Interactive OpenAPI docs are served at **`/api/docs/`** (Swagger UI) and
 
 **Authentication.** Protected endpoints use DRF **token auth**: obtain a token from
 `POST /api/token`, then send it as an `Authorization: Token <token>` header.
-All endpoints are **rate-limited** (per-scope throttling); the geocoding endpoints
-that call the paid Google API have a tighter `geocode` scope, and batch upload a
-`batch` scope.
+All four geocoding endpoints (`GET /geocode`, `POST /geocode`, `POST /geocode_single`,
+`POST /reverse_geocode`) **require a token** — they hit the paid Google API and/or
+the boundary DB. The geo/data endpoints (`/countries`, `*.geojson`, `/xlsform`, the
+boundary CSV serve, etc.) remain public. All endpoints are **rate-limited** (per-scope
+throttling); the single-lookup geocoding endpoints have a tighter `geocode` scope, and
+batch upload a `batch` scope.
 
 ### `GET /countries` — public
 
@@ -483,9 +486,10 @@ curl "http://localhost:8000/api/admin_levels?country=JM"
 
 ---
 
-### `GET /geocode` — public
+### `GET /geocode` — **auth required**
 
-Resolve P-codes from coordinates or an address string.
+Resolve P-codes from coordinates or an address string. Send a token as
+`Authorization: Token <token>` (obtain one via `POST /api/token`).
 
 | Param | Required | Description |
 |-------|----------|-------------|
@@ -496,10 +500,12 @@ Resolve P-codes from coordinates or an address string.
 
 ```bash
 # Coordinate lookup
-curl "http://localhost:8000/geocode?lat=17.9978&lon=-76.7936&country=JM"
+curl "http://localhost:8000/geocode?lat=17.9978&lon=-76.7936&country=JM" \
+  -H "Authorization: Token <token>"
 
 # Address lookup
-curl "http://localhost:8000/geocode?address=New+Kingston&country=JM"
+curl "http://localhost:8000/geocode?address=New+Kingston&country=JM" \
+  -H "Authorization: Token <token>"
 ```
 
 ```json
@@ -522,12 +528,13 @@ curl "http://localhost:8000/geocode?address=New+Kingston&country=JM"
 
 ---
 
-### `POST /geocode_single` — public
+### `POST /geocode_single` — **auth required**
 
 Geocode a single address or coordinate.
 
 ```bash
 curl -X POST http://localhost:8000/geocode_single \
+  -H "Authorization: Token <token>" \
   -H "Content-Type: application/json" \
   -d '{"address": "New Kingston, Jamaica", "country": "JM"}'
 ```
@@ -536,12 +543,13 @@ Response shape identical to `GET /geocode`.
 
 ---
 
-### `POST /reverse_geocode` — public
+### `POST /reverse_geocode` — **auth required**
 
 Look up P-codes for a known lat/lon.
 
 ```bash
 curl -X POST http://localhost:8000/reverse_geocode \
+  -H "Authorization: Token <token>" \
   -H "Content-Type: application/json" \
   -d '{"latitude": 17.9978, "longitude": -76.7936, "country": "JM"}'
 ```

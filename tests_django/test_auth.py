@@ -95,6 +95,33 @@ def test_batch_geocode_non_admin_user_allowed(api, db, pcode_result):
 
 
 # ---------------------------------------------------------------------------
+# GET /geocode, POST /geocode_single, POST /reverse_geocode — token gating
+# ---------------------------------------------------------------------------
+
+def test_geocode_get_requires_auth(api):
+    r = api.get("/geocode", {"lat": "18.1", "lon": "-76.5"})
+    assert r.status_code == 401
+
+
+def test_geocode_single_requires_auth(api):
+    r = api.post("/geocode_single", {"address": "Kingston"}, format="json")
+    assert r.status_code == 401
+
+
+def test_reverse_geocode_requires_auth(api):
+    r = api.post("/reverse_geocode", {"latitude": 18.1, "longitude": -76.5}, format="json")
+    assert r.status_code == 401
+
+
+def test_geocode_get_authenticated(auth_api, pcode_result):
+    with patch("apps.geocoding.views.resolve_pcodes", return_value=pcode_result), \
+         patch("apps.geocoding.views.resolve_secondary_boundaries", return_value={}):
+        r = auth_api.get("/geocode", {"lat": "18.1", "lon": "-76.5"})
+    assert r.status_code == 200
+    assert r.json()["success"] is True
+
+
+# ---------------------------------------------------------------------------
 # POST /api/cache/clear — admin gating
 # ---------------------------------------------------------------------------
 
