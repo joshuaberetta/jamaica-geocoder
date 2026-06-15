@@ -399,19 +399,71 @@ def _insert_rows(rows: list[dict], iso2: str, adm_level: int) -> None:
         )
 
 
+def set_ingest_complete(levels: list[int]) -> None:
+    """Record that a full global ingest finished successfully. Writes a single
+    row into ingest_meta keyed 'global_complete'. The deploy gate checks this
+    instead of guessing completion from which admin levels happen to be
+    present (which is dataset-dependent and was previously wrong)."""
+    with engine.begin() as conn:
+        conn.execute(text("""
+            CREATE TABLE IF NOT EXISTS ingest_meta (
+                key        TEXT PRIMARY KEY,
+                value      TEXT,
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+        """))
+        conn.execute(
+            text("""
+                INSERT INTO ingest_meta (key, value, updated_at)
+                VALUES ('global_complete', :levels, now())
+                ON CONFLICT (key)
+                DO UPDATE SET value = EXCLUDED.value, updated_at = now()
+            """),
+            {"levels": ",".join(str(l) for l in levels)},
+        )
+
+
+def _ingested_iso2_at_level(adm_level: int) -> set[str]:
+    """Return the set of iso2 codes already present in cod_adm at this admin
+    level. Used for resumable ingest: because each (iso2, adm_level) is written
+    in a single DELETE+INSERT transaction (_insert_rows), the presence of any
+    row for a pair means that pair was fully committed and can be skipped on a
+    re-run. This lets the ingest resume after a crash/timeout instead of
+    restarting from scratch."""
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(
+                text("SELECT DISTINCT iso2 FROM cod_adm WHERE adm_level = :level"),
+                {"level": adm_level},
+            ).fetchall()
+        return {r[0] for r in rows if r[0]}
+    except Exception:
+        # Table may not exist yet on a truly fresh DB; treat as nothing done.
+        return set()
+
+
 def ingest_global_layer(file_path: str, layer_name: str,
                         country_filter: str | None = None) -> int:
     """
     Ingest one layer from the global matched GDB format (admin0, admin1, …).
     Streams features via fiona one-by-one and groups by country to avoid
     loading the entire global layer into memory at once.
+
+    Resumable: countries already present at this admin level are skipped before
+    geometry parsing, so a re-run after a crash/timeout picks up where it left
+    off rather than re-ingesting committed work.
     """
     m = GLOBAL_LAYER_RE.match(layer_name)
     if not m:
         return 0
     adm_level = int(m.group(1))
 
-    print(f"\nStreaming {layer_name} (ADM{adm_level}) by country...")
+    already_done = _ingested_iso2_at_level(adm_level)
+    if already_done:
+        print(f"\nStreaming {layer_name} (ADM{adm_level}) by country... "
+              f"({len(already_done)} countries already ingested — skipping)")
+    else:
+        print(f"\nStreaming {layer_name} (ADM{adm_level}) by country...")
 
     import fiona
     from pyproj import CRS, Transformer
@@ -467,6 +519,14 @@ def ingest_global_layer(file_path: str, layer_name: str,
                 iso3_match = iso_val_u == cf if iso3_col else False
                 iso2_match = iso3_to_iso2(iso_val_u) == cf if iso3_col else iso_val_u == cf
                 if not (iso3_match or iso2_match):
+                    continue
+
+            # Resumable skip: drop features for countries already ingested at
+            # this level before doing any (expensive) geometry parsing. iso2 is
+            # derived the same way as the insert loop below.
+            if already_done:
+                iso2_for_feat = iso3_to_iso2(iso_val_u) if iso3_col else iso_val_u
+                if iso2_for_feat in already_done:
                     continue
 
             geom_raw = feat.get("geometry")
@@ -773,6 +833,17 @@ def main():
         print("\nDetected global format — ingesting all countries per layer.")
         for layer in sorted(layers, key=lambda l: GLOBAL_LAYER_RE.match(l).group(1)):
             total_rows += ingest_global_layer(file_path, layer, args.country)
+
+        # Mark a full (unfiltered) global ingest complete so deploys can
+        # check-and-skip. The layer set here drives the dataset's real admin
+        # levels (e.g. 1-4), which the old "levels 0-3 present" gate could
+        # never satisfy. Only set when ingesting every country.
+        if not args.country:
+            ingested_levels = sorted(
+                int(GLOBAL_LAYER_RE.match(l).group(1)) for l in layers
+            )
+            set_ingest_complete(ingested_levels)
+            print(f"  Marked global ingest complete for levels {ingested_levels}.")
 
     else:
         # Per-country COD-AB GeoPackage format

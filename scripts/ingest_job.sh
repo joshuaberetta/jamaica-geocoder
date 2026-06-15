@@ -9,37 +9,45 @@ set -e
 # download + global ingest can take as long as it needs without tripping the
 # web service's readiness probe.
 #
-# It is idempotent: once cod_adm holds all admin levels 0-3, subsequent
-# deploys check-and-skip in seconds. The web entrypoint no longer ingests;
+# It is idempotent and resumable: once the global ingest completes it records a
+# marker (ingest_meta.global_complete) and subsequent deploys check-and-skip in
+# seconds; a run interrupted mid-ingest resumes from the last committed country
+# rather than restarting. The web entrypoint no longer ingests;
 # it only applies cheap, fast startup steps and then binds gunicorn.
 # ---------------------------------------------------------------------------
 
 DATA_FILE="/data/global_admin_boundaries_matched_latest.gdb.zip"
 
-echo "==> [ingest-job] Checking database state..."
-ROW_COUNT=$(python - <<'EOF'
+# Fast skip: if a previous run recorded a completed global ingest, exit
+# immediately — no schema work, no 940MB download. The completion marker is
+# written by ingest.py only after every layer finishes (set_ingest_complete),
+# which is the only reliable "done" signal. (The old gate counted "admin levels
+# 0-3 present", but this dataset has levels 1-4 and no level 0, so it could
+# never reach 4 and every deploy re-ingested from scratch.)
+echo "==> [ingest-job] Checking for completed-ingest marker..."
+COMPLETE=$(python - <<'EOF'
 import os, sys
 from sqlalchemy import create_engine, text
 url = os.environ.get("DATABASE_URL")
 if not url:
-    print("0")
-    sys.exit(0)
+    print("no"); sys.exit(0)
 try:
     engine = create_engine(url)
     with engine.connect() as conn:
-        # Require admin levels 0, 1, 2, and 3 to all be present.
-        # If any are missing the ingest was incomplete and must be re-run.
-        level_count = conn.execute(text(
-            "SELECT COUNT(DISTINCT adm_level) FROM cod_adm WHERE adm_level IN (0,1,2,3)"
+        v = conn.execute(text(
+            "SELECT value FROM ingest_meta WHERE key = 'global_complete'"
         )).scalar()
-        print(level_count)
-except Exception as e:
-    print(f"DB check failed: {e}", file=sys.stderr)
-    print("0")
+        print("yes" if v else "no")
+except Exception:
+    # ingest_meta doesn't exist yet → not complete.
+    print("no")
 EOF
 )
 
-echo "==> [ingest-job] Distinct admin levels (0-3) in cod_adm: ${ROW_COUNT}"
+if [ "${COMPLETE}" = "yes" ]; then
+    echo "==> [ingest-job] Global ingest already complete, skipping."
+    exit 0
+fi
 
 # Ensure the boundary schema exists. On managed Postgres (e.g. DigitalOcean)
 # there is no /docker-entrypoint-initdb.d hook, so db/schema.sql is never
@@ -64,11 +72,6 @@ with engine.begin() as conn:
     conn.exec_driver_sql(sql)
 print("Boundary schema ensured.")
 PYEOF
-
-if [ "${ROW_COUNT}" = "4" ]; then
-    echo "==> [ingest-job] All admin levels 0-3 present, skipping ingest."
-    exit 0
-fi
 
 if [ ! -f "${DATA_FILE}" ]; then
     echo "==> [ingest-job] No local data file found. Downloading from HDX to /data (this may take a while)..."
