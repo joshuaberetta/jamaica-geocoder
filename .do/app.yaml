@@ -3,6 +3,28 @@ region: nyc
 domains:
   - domain: geocoder.kobolabs.dev
     type: PRIMARY
+
+# Heavy one-time boundary download + global ingest runs here, to completion,
+# BEFORE the web service starts. Pre-deploy jobs have no HTTP health check, so
+# the long ingest can't trip the web readiness probe. Idempotent: once cod_adm
+# holds admin levels 0-3, later deploys check-and-skip in seconds.
+jobs:
+  - name: ingest
+    kind: PRE_DEPLOY
+    dockerfile_path: Dockerfile
+    source_dir: /
+    run_command: sh scripts/ingest_job.sh
+    instance_count: 1
+    instance_size_slug: basic-xs
+    github:
+      branch: beta
+      deploy_on_push: true
+      repo: kobotoolbox/geocoder
+    envs:
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: ${db.DATABASE_URL}
+
 services:
   - name: web
     dockerfile_path: Dockerfile
@@ -36,7 +58,10 @@ services:
       - key: ALLOWED_HOSTS
         scope: RUN_TIME
         value: "*"
-    
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        value: ${db.DATABASE_URL}
+
     health_check:
       http_path: /health
       initial_delay_seconds: 40

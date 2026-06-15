@@ -74,7 +74,7 @@ COPY --chown=appuser:appuser config/ ./config/
 COPY --chown=appuser:appuser apps/ ./apps/
 COPY --chown=appuser:appuser scripts/ ./scripts/
 COPY --chown=appuser:appuser db/ ./db/
-RUN chmod +x scripts/entrypoint.sh
+RUN chmod +x scripts/entrypoint.sh scripts/ingest_job.sh
 
 # GeoDjango uses the system GDAL/GEOS installed above (via gdal-config).
 ENV DJANGO_SETTINGS_MODULE=config.settings
