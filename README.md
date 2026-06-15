@@ -649,15 +649,21 @@ health-zone CSVs add an `adm1` cascade column.
 
 #### `GET /boundaries/{username}/{project}/{ISO2}/{level}.csv` — public
 
-The same CSV with **per-project translation columns** appended. A signed-in user
-creates a *boundary-CSV project* and pins one or more XLSForm translation column
-headers (e.g. `label::English (en)`, `label::Spanish (es)`) to it; each appended
-column duplicates the `label` value under its header — a ready-to-translate
-scaffold, unique per user + project. The serve URL itself needs no auth.
+The same CSV with **per-project translation columns**. A signed-in user creates
+a *boundary-CSV project* and configures translation headers on it, unique per
+user + project (the serve URL itself needs no auth):
+
+- **Primary label column** (`label_column_name`) — renames the base `label`
+  header to an XLSForm translation (e.g. `label::English (en)`). Defaults to
+  plain `label`.
+- **Additional translation columns** — extra `label::…` columns appended after
+  the primary label. Each duplicates the label value under its header — a
+  ready-to-translate scaffold.
 
 ```bash
 curl -OJ "http://localhost:8000/boundaries/josh/my-survey/JM/1.csv"
-# name,label,label::English (en),label::Spanish (es)
+# label_column_name="label::English (en)", one extra column "label::Spanish (es)":
+# name,label::English (en),label::English (en),label::Spanish (es)
 # JM01,Kingston,Kingston,Kingston
 ```
 
@@ -669,6 +675,7 @@ via the **boundary-CSV management API**:
 | `GET` | `/api/boundary-projects/` | List my projects |
 | `POST` | `/api/boundary-projects/` | Create: `{name, slug}` |
 | `GET` | `/api/boundary-projects/{slug}/?country=JM` | Detail; `csv_urls` lists per-level URLs for that country |
+| `PATCH` | `/api/boundary-projects/{slug}/` | Update: `{name, label_column_name}` |
 | `DELETE` | `/api/boundary-projects/{slug}/` | Delete a project |
 | `POST` | `/api/boundary-projects/{slug}/languages/` | Add a column: `{header}` |
 | `PATCH` | `/api/boundary-projects/{slug}/languages/{id}/` | Rename a column: `{header}` |

@@ -75,6 +75,7 @@ export interface BoundaryCsvProject {
   slug: string;
   name: string;
   owner_username: string;
+  label_column_name: string;
   languages: BoundaryCsvLanguage[];
   csv_urls: BoundaryCsvUrl[] | null;
   created_at: string;

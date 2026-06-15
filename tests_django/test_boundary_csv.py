@@ -115,6 +115,28 @@ def test_project_csv_appends_label_duplicates(api, project):
     assert rows[2] == ["JM02", "Saint Andrew", "Saint Andrew", "Saint Andrew"]
 
 
+def test_project_csv_label_column_override(api, project):
+    # Make the primary label header a translation.
+    project.label_column_name = "label::English (en)"
+    project.save()
+    with patch("apps.boundary_csv.services.build_rows", return_value=JM_LEVEL_1):
+        r = api.get("/boundaries/admin/my-survey/JM/1.csv")
+    assert r.status_code == 200
+    rows = _parse(r)
+    # Base "label" header replaced; appended translation column unchanged.
+    assert rows[0] == ["name", "label::English (en)",
+                       "label::English (en)", "label::Spanish (es)"]
+    assert rows[1] == ["JM01", "Kingston", "Kingston", "Kingston"]
+
+
+def test_label_column_name_patchable(auth_api):
+    auth_api.post("/api/boundary-projects/", {"slug": "s", "name": "S"}, format="json")
+    r = auth_api.patch("/api/boundary-projects/s/",
+                       {"label_column_name": "label::French (fr)"}, format="json")
+    assert r.status_code == 200
+    assert r.json()["label_column_name"] == "label::French (fr)"
+
+
 def test_project_csv_unknown_project_404(api):
     with patch("apps.boundary_csv.services.build_rows", return_value=JM_LEVEL_1):
         r = api.get("/boundaries/admin/nope/JM/1.csv")

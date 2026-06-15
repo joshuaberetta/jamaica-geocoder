@@ -36,7 +36,7 @@ class BoundaryCsvProjectSerializer(serializers.ModelSerializer):
     class Meta:
         model = BoundaryCsvProject
         fields = [
-            "id", "slug", "name", "owner_username",
+            "id", "slug", "name", "owner_username", "label_column_name",
             "languages", "csv_urls", "created_at", "updated_at",
         ]
         read_only_fields = ["created_at", "updated_at"]

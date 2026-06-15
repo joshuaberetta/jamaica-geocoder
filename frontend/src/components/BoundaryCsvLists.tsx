@@ -21,6 +21,7 @@ import {
   deleteBoundaryProject,
   fetchBoundaryProject,
   fetchBoundaryProjects,
+  updateBoundaryProject,
 } from '../api/client';
 import type { BoundaryCsvProject } from '../api/types';
 import { useAuth } from '../context/AuthContext';
@@ -37,6 +38,21 @@ function slugify(name: string): string {
     .trim()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/^-+|-+$/g, '');
+}
+
+// Translation columns are XLSForm headers of the form `label::<suffix>`, e.g.
+// `label::English (en)`. The UI only takes the suffix; we add/strip the prefix.
+const LABEL_PREFIX = 'label::';
+
+/** Turn a translation suffix into a full header. Empty suffix -> plain "label". */
+function toHeader(suffix: string): string {
+  const s = suffix.trim();
+  return s ? `${LABEL_PREFIX}${s}` : 'label';
+}
+
+/** Strip the `label::` prefix for display; show full header otherwise. */
+function toSuffix(header: string): string {
+  return header.startsWith(LABEL_PREFIX) ? header.slice(LABEL_PREFIX.length) : header;
 }
 
 function CsvUrlRow({ label, path }: { label: string; path: string }) {
@@ -68,7 +84,8 @@ export function BoundaryCsvLists({ country }: Props) {
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null);
   const [detail, setDetail] = useState<BoundaryCsvProject | null>(null);
   const [newProjectName, setNewProjectName] = useState('');
-  const [newHeader, setNewHeader] = useState('');
+  const [newSuffix, setNewSuffix] = useState('');
+  const [labelSuffix, setLabelSuffix] = useState('');
   const [busy, setBusy] = useState(false);
 
   // Load the user's projects once signed in.
@@ -90,7 +107,10 @@ export function BoundaryCsvLists({ country }: Props) {
       return;
     }
     fetchBoundaryProject(selectedSlug, country ?? undefined)
-      .then(setDetail)
+      .then((d) => {
+        setDetail(d);
+        setLabelSuffix(toSuffix(d.label_column_name === 'label' ? '' : d.label_column_name));
+      })
       .catch((e) => notifications.show({ color: 'red', message: (e as Error).message }));
   }, [selectedSlug, country, projects]);
 
@@ -133,13 +153,27 @@ export function BoundaryCsvLists({ country }: Props) {
 
   const handleAddLanguage = async () => {
     if (!detail) return;
-    const header = newHeader.trim();
-    if (!header) return;
+    const suffix = newSuffix.trim();
+    if (!suffix) return;
     setBusy(true);
     try {
-      await addBoundaryLanguage(detail.slug, header);
-      setNewHeader('');
+      await addBoundaryLanguage(detail.slug, toHeader(suffix));
+      setNewSuffix('');
       reloadDetail();
+    } catch (e) {
+      notifications.show({ color: 'red', message: (e as Error).message });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSaveLabel = async () => {
+    if (!detail) return;
+    setBusy(true);
+    try {
+      await updateBoundaryProject(detail.slug, { label_column_name: toHeader(labelSuffix) });
+      reloadDetail();
+      notifications.show({ color: 'green', message: 'Label column updated' });
     } catch (e) {
       notifications.show({ color: 'red', message: (e as Error).message });
     } finally {
@@ -238,12 +272,40 @@ export function BoundaryCsvLists({ country }: Props) {
                   </Button>
                 </Group>
 
+                {/* Primary label column */}
+                <Stack gap={4}>
+                  <Text size="sm" fw={500}>Primary label column</Text>
+                  <Text size="xs" c="dimmed">
+                    Make the main label column a translation. Leave blank for a plain{' '}
+                    <code>label</code> header.
+                  </Text>
+                  <Group align="flex-end" gap="sm" mt={4}>
+                    <TextInput
+                      placeholder="English (en)"
+                      leftSection={<Text size="sm" c="dimmed">label::</Text>}
+                      leftSectionWidth={56}
+                      value={labelSuffix}
+                      onChange={(e) => setLabelSuffix(e.currentTarget.value)}
+                      onKeyDown={(e) => e.key === 'Enter' && handleSaveLabel()}
+                      style={{ flex: 1 }}
+                    />
+                    <Button
+                      variant="default"
+                      onClick={handleSaveLabel}
+                      loading={busy}
+                      disabled={toHeader(labelSuffix) === detail.label_column_name}
+                    >
+                      Save
+                    </Button>
+                  </Group>
+                </Stack>
+
                 {/* Translation columns */}
                 <Stack gap={4}>
-                  <Text size="sm" fw={500}>Translation columns</Text>
+                  <Text size="sm" fw={500}>Additional translation columns</Text>
                   {detail.languages.length === 0 ? (
                     <Text size="sm" c="dimmed">
-                      None yet. Each column duplicates the label under the header you give it.
+                      None yet. Each adds a <code>label::…</code> column that duplicates the label.
                     </Text>
                   ) : (
                     <Group gap="xs">
@@ -271,14 +333,16 @@ export function BoundaryCsvLists({ country }: Props) {
                   )}
                   <Group align="flex-end" gap="sm" mt={4}>
                     <TextInput
-                      label="Add column header"
-                      placeholder="label::Spanish (es)"
-                      value={newHeader}
-                      onChange={(e) => setNewHeader(e.currentTarget.value)}
+                      label="Add translation"
+                      placeholder="Spanish (es)"
+                      leftSection={<Text size="sm" c="dimmed">label::</Text>}
+                      leftSectionWidth={56}
+                      value={newSuffix}
+                      onChange={(e) => setNewSuffix(e.currentTarget.value)}
                       onKeyDown={(e) => e.key === 'Enter' && handleAddLanguage()}
                       style={{ flex: 1 }}
                     />
-                    <Button onClick={handleAddLanguage} loading={busy} disabled={!newHeader.trim()}>
+                    <Button onClick={handleAddLanguage} loading={busy} disabled={!newSuffix.trim()}>
                       Add
                     </Button>
                   </Group>

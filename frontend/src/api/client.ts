@@ -90,6 +90,17 @@ export function deleteBoundaryProject(slug: string): Promise<void> {
   return request<void>(`/api/boundary-projects/${slug}/`, { method: 'DELETE' });
 }
 
+export function updateBoundaryProject(
+  slug: string,
+  patch: Partial<Pick<BoundaryCsvProject, 'name' | 'label_column_name'>>
+): Promise<BoundaryCsvProject> {
+  return request<BoundaryCsvProject>(`/api/boundary-projects/${slug}/`, {
+    method: 'PATCH',
+    headers: JSON_HEADERS,
+    body: JSON.stringify(patch),
+  });
+}
+
 export function addBoundaryLanguage(slug: string, header: string): Promise<unknown> {
   return request<unknown>(`/api/boundary-projects/${slug}/languages/`, {
     method: 'POST',

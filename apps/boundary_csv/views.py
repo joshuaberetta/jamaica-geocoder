@@ -62,12 +62,13 @@ def _cached_base(iso2: str, level_token: str):
     return entry
 
 
-def _serve_csv(request, iso2, level_token, languages, version_token):
+def _serve_csv(request, iso2, level_token, languages, version_token, label_header="label"):
     """Assemble and return the CSV response, honouring If-None-Match/304.
 
     languages: ordered list of header strings to append (label duplicates).
     version_token: per-config string folded into the ETag (e.g. project.updated_at)
     so config edits bust client caches even when the base rows are unchanged.
+    label_header: header for the primary label column (e.g. 'label::English (en)').
     """
     iso2 = iso2.upper()
     base = _cached_base(iso2, level_token)
@@ -75,15 +76,17 @@ def _serve_csv(request, iso2, level_token, languages, version_token):
         raise Http404("No boundary data for this country/level")
 
     etag = hashlib.md5(
-        f"{base['etag']}:{version_token}:{'|'.join(languages)}".encode()
+        f"{base['etag']}:{version_token}:{label_header}:{'|'.join(languages)}".encode()
     ).hexdigest()
     if request.headers.get("If-None-Match") == etag:
         return HttpResponseNotModified()
 
     label_index = base["label_index"]
+    header_row = list(base["header"])
+    header_row[label_index] = label_header  # replace base "label" header
     out = StringIO()
     writer = csv.writer(out)
-    writer.writerow(list(base["header"]) + list(languages))
+    writer.writerow(header_row + list(languages))
     for row in base["rows"]:
         label = row[label_index]
         writer.writerow(list(row) + [label] * len(languages))
@@ -124,7 +127,10 @@ class BoundaryCsvProjectExportView(APIView):
         )
         languages = [lang.header for lang in project.languages.all()]
         version_token = project.updated_at.isoformat()
-        return _serve_csv(request, iso2, level_token, languages, version_token)
+        label_header = project.label_column_name or "label"
+        return _serve_csv(
+            request, iso2, level_token, languages, version_token, label_header
+        )
 
 
 # ---------------------------------------------------------------------------

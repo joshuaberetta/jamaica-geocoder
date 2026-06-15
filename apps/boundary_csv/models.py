@@ -23,6 +23,11 @@ class BoundaryCsvProject(models.Model):
     )
     slug = models.SlugField(max_length=255)
     name = models.CharField(max_length=255)
+    # CSV header for the primary label column. Defaults to plain "label"; set to
+    # an XLSForm translation header (e.g. "label::English (en)") to make the main
+    # label column itself a translation. Additional translations are appended as
+    # BoundaryCsvLanguage columns.
+    label_column_name = models.CharField(max_length=255, default="label")
     created_at = models.DateTimeField(auto_now_add=True)
     # auto_now bumps on every save; used as part of the public CSV's ETag so
     # adding/removing a language column invalidates cached client copies.
