@@ -15,7 +15,7 @@ services:
     http_port: 5000
     
     instance_count: 1
-    instance_size_slug: basic-xxs
+    instance_size_slug: basic-xs
     
     envs:
       - key: GOOGLE_MAPS_API_KEY

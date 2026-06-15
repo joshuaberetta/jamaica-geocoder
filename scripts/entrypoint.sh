@@ -36,6 +36,30 @@ EOF
 
 echo "==> Distinct admin levels (0-3) in cod_adm: ${ROW_COUNT}"
 
+# Ensure the boundary schema exists. On managed Postgres (e.g. DigitalOcean)
+# there is no /docker-entrypoint-initdb.d hook, so db/schema.sql is never
+# applied automatically the way it is under docker-compose. The schema is
+# fully idempotent (CREATE ... IF NOT EXISTS), so running it on every start
+# is safe and creates cod_adm/mv_countries/secondary_boundaries when absent.
+echo "==> Ensuring boundary schema (db/schema.sql)..."
+python - <<'PYEOF'
+import os, sys
+from pathlib import Path
+from sqlalchemy import create_engine, text
+
+url = os.environ.get("DATABASE_URL")
+if not url:
+    sys.exit("ERROR: DATABASE_URL not set; cannot apply schema.")
+
+sql = Path("db/schema.sql").read_text()
+engine = create_engine(url)
+with engine.begin() as conn:
+    conn.execute(text("CREATE EXTENSION IF NOT EXISTS postgis"))
+    # Execute the schema as a single script; statements are idempotent.
+    conn.exec_driver_sql(sql)
+print("Boundary schema ensured.")
+PYEOF
+
 if [ "${ROW_COUNT}" != "4" ]; then
     if [ ! -f "${DATA_FILE}" ]; then
         echo "==> No local data file found. Downloading from HDX to /data (this may take a while)..."
