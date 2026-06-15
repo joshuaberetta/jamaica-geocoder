@@ -126,7 +126,7 @@ export function MainPage() {
               </Anchor>
               {' | '}
               <Anchor
-                href="https://github.com/joshuaberetta/jamaica-geocoder/issues/new/choose"
+                href="https://github.com/kobotoolbox/geocoder/issues/new/choose"
                 target="_blank"
                 size="xs"
               >

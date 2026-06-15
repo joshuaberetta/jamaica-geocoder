@@ -1,5 +1,8 @@
 name: humanitarian-geocoder
 region: nyc
+domains:
+  - domain: geocoder.kobolabs.dev
+    type: PRIMARY
 services:
   - name: web
     dockerfile_path: Dockerfile
