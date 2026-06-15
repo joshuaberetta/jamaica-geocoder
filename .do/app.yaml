@@ -8,9 +8,9 @@ services:
     dockerfile_path: Dockerfile
     source_dir: /
     github:
-      branch: main
+      branch: beta
       deploy_on_push: true
-      repo: <YOUR_GITHUB_USERNAME>/<YOUR_REPO_NAME>
+      repo: kobotoolbox/geocoder
     
     http_port: 5000
     
