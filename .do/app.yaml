@@ -15,7 +15,9 @@ jobs:
     source_dir: /
     run_command: sh scripts/ingest_job.sh
     instance_count: 1
-    instance_size_slug: basic-xs
+    # The global ingest buckets a whole layer in memory before inserting;
+    # admin2/admin3 exceed 1GB, so the job needs a larger instance than web.
+    instance_size_slug: basic-m
     github:
       branch: beta
       deploy_on_push: true
