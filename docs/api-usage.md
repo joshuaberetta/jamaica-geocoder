@@ -201,6 +201,45 @@ for level in range(5):
 
 ---
 
+## `POST /geocode_single` and `POST /reverse_geocode`
+
+Single-point lookups used by the web UI. `geocode_single` takes a free-text
+`address` (JSON body `{address, country?}`); `reverse_geocode` takes a point
+(JSON body `{latitude, longitude, country?}`). Both return the same P-code
+fields documented for `GET /geocode`.
+
+### Authentication
+
+These two endpoints accept **either**:
+
+- a valid API token (`Authorization: Token <token>`), **or**
+- an anonymous request originating from the geocoder's own web UI.
+
+The web-UI path lets the single-lookup tab work without a login. It is enforced
+by validating the request's `Origin`/`Referer` against the server's own host
+(plus any `CORS_ALLOWED_ORIGINS`, e.g. the Vite dev server). A request with
+neither a token nor a recognised browser origin is rejected with `401`.
+
+This origin check blocks cross-origin abuse and casual scripting, but it is
+**not a hard security boundary** — `Origin`/`Referer` can be forged by a
+non-browser client. The per-scope rate limit (`THROTTLE_GEOCODE`, default
+30/min) is the backstop against cost abuse on the paid Google API. Programmatic
+integrations should always send a token rather than relying on the UI path.
+
+> Note: if `CORS_ALLOW_ALL=true` is set, the origin gate is a no-op (anonymous
+> requests from any origin are allowed) — by design, since enforcing it would
+> be meaningless when CORS is wide open.
+
+```bash
+# As an API client (token)
+curl -X POST http://localhost:5001/geocode_single \
+  -H "Authorization: Token <token>" \
+  -H "Content-Type: application/json" \
+  -d '{"address": "Kingston Central, Jamaica", "country": "JM"}'
+```
+
+---
+
 ## `POST /geocode` — Batch Upload
 
 Accepts a CSV or Excel file with an `address` column and returns a geocoded file with P-code columns appended. **Authentication required** (session cookie from `POST /login`).

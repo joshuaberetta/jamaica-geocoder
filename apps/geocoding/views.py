@@ -1,9 +1,13 @@
 """
-Geocoding endpoints ported from web_app.py (all require token auth):
+Geocoding endpoints ported from web_app.py:
     GET  /geocode            (token auth, throttled — hits the paid Google API)
     POST /geocode            (token auth — CSV/XLSX batch upload)
-    POST /geocode_single     (token auth, throttled)
-    POST /reverse_geocode    (token auth, throttled)
+    POST /geocode_single     (token auth OR same-origin web UI, throttled)
+    POST /reverse_geocode    (token auth OR same-origin web UI, throttled)
+
+The two single-point lookups accept anonymous calls from our own web UI
+(validated via Origin/Referer) so the SPA works without a login, while still
+requiring a token for programmatic / cross-origin access. See permissions.py.
 
 The Google-API + pandas helpers (geocode_address, geocode_dataframe) are reused
 unchanged from the top-level geocode.py module.
@@ -28,6 +32,7 @@ from rest_framework.throttling import ScopedRateThrottle
 
 from scripts.geocode import geocode_address, geocode_dataframe
 from apps.geo.services import resolve_pcodes, resolve_secondary_boundaries
+from apps.geocoding.permissions import IsAuthenticatedOrUIClient
 
 
 class GeocodeThrottle(ScopedRateThrottle):
@@ -217,7 +222,7 @@ def geocode_batch(request):
 @extend_schema(request=OpenApiTypes.OBJECT, responses=OpenApiTypes.OBJECT,
                description="Geocode a single address; body: {address, country?}.")
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedOrUIClient])
 @throttle_classes([GeocodeThrottle])
 def geocode_single(request):
     """Geocode a single address or coordinate string."""
@@ -253,7 +258,7 @@ def geocode_single(request):
 @extend_schema(request=OpenApiTypes.OBJECT, responses=OpenApiTypes.OBJECT,
                description="Resolve P-codes from a point; body: {latitude, longitude, country?}.")
 @api_view(["POST"])
-@permission_classes([IsAuthenticated])
+@permission_classes([IsAuthenticatedOrUIClient])
 @throttle_classes([GeocodeThrottle])
 def reverse_geocode(request):
     """Resolve P-codes from a latitude/longitude coordinate."""

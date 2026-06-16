@@ -104,13 +104,49 @@ def test_geocode_get_requires_auth(api):
 
 
 def test_geocode_single_requires_auth(api):
+    """No token and no browser Origin → treated as an API client → rejected."""
     r = api.post("/geocode_single", {"address": "Kingston"}, format="json")
     assert r.status_code == 401
 
 
 def test_reverse_geocode_requires_auth(api):
+    """No token and no browser Origin → treated as an API client → rejected."""
     r = api.post("/reverse_geocode", {"latitude": 18.1, "longitude": -76.5}, format="json")
     assert r.status_code == 401
+
+
+def test_geocode_single_cross_origin_rejected(api):
+    """Anonymous request from a foreign Origin is rejected."""
+    r = api.post(
+        "/geocode_single", {"address": "Kingston"}, format="json",
+        HTTP_ORIGIN="https://evil.example.com",
+    )
+    assert r.status_code == 401
+
+
+def test_geocode_single_same_origin_ui_allowed(api, pcode_result):
+    """Anonymous request from the web UI's own origin is allowed (no token)."""
+    with patch("apps.geocoding.views.geocode_address", return_value=(18.1, -76.5, "ROOFTOP")), \
+         patch("apps.geocoding.views.resolve_pcodes", return_value=pcode_result), \
+         patch("apps.geocoding.views.resolve_secondary_boundaries", return_value={}):
+        r = api.post(
+            "/geocode_single", {"address": "Kingston"}, format="json",
+            HTTP_ORIGIN="http://testserver",
+        )
+    assert r.status_code == 200
+    assert r.json()["success"] is True
+
+
+def test_reverse_geocode_same_origin_ui_allowed(api, pcode_result):
+    """Anonymous reverse-geocode from the web UI's own origin is allowed."""
+    with patch("apps.geocoding.views.resolve_pcodes", return_value=pcode_result), \
+         patch("apps.geocoding.views.resolve_secondary_boundaries", return_value={}):
+        r = api.post(
+            "/reverse_geocode", {"latitude": 18.1, "longitude": -76.5}, format="json",
+            HTTP_ORIGIN="http://testserver",
+        )
+    assert r.status_code == 200
+    assert r.json()["success"] is True
 
 
 def test_geocode_get_authenticated(auth_api, pcode_result):
