@@ -56,6 +56,25 @@ SECRET_KEY = os.getenv("SECRET_KEY", "dev-secret-key-change-in-production")
 DEBUG = os.getenv("DJANGO_DEBUG", "false").lower() == "true"
 ALLOWED_HOSTS = os.getenv("ALLOWED_HOSTS", "*").split(",")
 
+# Since Django 4.0, CSRF checks the request Origin against CSRF_TRUSTED_ORIGINS
+# for HTTPS POSTs (e.g. the admin login). Behind DO App Platform's TLS-
+# terminating proxy this must list the full scheme://host the browser uses, or
+# admin/form POSTs fail with "CSRF verification failed". Driven by env so the
+# DO app URL and custom domain can be set without code changes; the DO app
+# domain wildcard covers the *.ondigitalocean.app starter URL.
+CSRF_TRUSTED_ORIGINS = [
+    o.strip()
+    for o in os.getenv(
+        "CSRF_TRUSTED_ORIGINS",
+        "https://*.ondigitalocean.app,https://geocoder.kobolabs.dev",
+    ).split(",")
+    if o.strip()
+]
+
+# DO's proxy terminates TLS and forwards X-Forwarded-Proto; trust it so Django
+# treats requests as HTTPS (correct secure-cookie and Origin handling).
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
