@@ -108,7 +108,14 @@ export function MapSection({ country, mapCenter, isVisible = true }: Props) {
     setOverlayVisible(true);
     fetch(`/boundaries.geojson?country=${country}&level=${selectedLevel}`, { signal: controller.signal })
       .then((r) => r.ok ? r.json() : null)
-      .then((data) => { if (!controller.signal.aborted) setGeojson(data); })
+      .then((data) => {
+        if (controller.signal.aborted) return;
+        setGeojson(data);
+        // MapViewManager only fires onFitDone (which hides the overlay) when the
+        // response has features. Clear it here for the empty/failed cases so the
+        // loader never hangs.
+        if (!data || !data.features?.length) setOverlayVisible(false);
+      })
       .catch((err) => {
         if (err.name !== 'AbortError') {
           setGeojson(null);
@@ -244,6 +251,9 @@ export function MapSection({ country, mapCenter, isVisible = true }: Props) {
 
           {overlayVisible && (
             <Overlay
+              // Above Leaflet's panes (max 700) and controls (1000) so the
+              // loader sits on top of the map rather than behind the tiles.
+              zIndex={1100}
               style={{ borderRadius: 4, display: 'flex', flexDirection: 'column', gap: 12, alignItems: 'center', justifyContent: 'center' }}
               blur={2}
               backgroundOpacity={0.4}
