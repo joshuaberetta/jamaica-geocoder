@@ -56,20 +56,29 @@ export function MainPage() {
                 Enter a single address or upload a CSV file with addresses to geocode and match to administrative boundaries.
               </Text>
             </div>
-            <Button
-              onClick={() => {
-                if (loggedIn) {
-                  logout();
-                } else {
-                  navigate('/login');
-                }
-              }}
-              variant="default"
-              size="sm"
-              style={{ flexShrink: 0 }}
-            >
-              {loggedIn ? 'Sign Out' : 'Sign In'}
-            </Button>
+            <Group gap="sm" wrap="nowrap" style={{ flexShrink: 0 }}>
+              <Button
+                component="a"
+                href="/api/docs/"
+                variant="default"
+                size="sm"
+              >
+                API Docs
+              </Button>
+              <Button
+                onClick={() => {
+                  if (loggedIn) {
+                    logout();
+                  } else {
+                    navigate('/login');
+                  }
+                }}
+                variant="default"
+                size="sm"
+              >
+                {loggedIn ? 'Sign Out' : 'Sign In'}
+              </Button>
+            </Group>
           </Group>
 
           <Tabs value={activeTab} onChange={(v) => v && setActiveTab(v)} variant="outline">
