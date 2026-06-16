@@ -59,8 +59,11 @@ with engine.begin() as conn:
         print(f"mv_countries OK ({count} countries).")
 PYEOF
 
-echo "==> Pre-generating XLSForms..."
-python scripts/generate_xlsforms.py || echo "WARNING: XLSForm pre-generation failed; forms will be built on demand."
+# XLSForms are NOT pre-generated here. Eager generation of all ~110 forms took
+# ~90s, which pushed gunicorn past the readiness-probe window and failed the
+# deploy. The /xlsform endpoint builds each country's form on demand and caches
+# it to XLSFORM_DIR (apps/geo/views.py:download_xlsform), so pre-warming is
+# unnecessary for correctness — drop it from the startup critical path.
 
 echo "==> Applying Django migrations (auth + token tables)..."
 # The managed=False boundary tables/view are owned by db/schema.sql + ingest.py;

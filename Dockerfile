@@ -79,8 +79,11 @@ RUN chmod +x scripts/entrypoint.sh scripts/ingest_job.sh
 # GeoDjango uses the system GDAL/GEOS installed above (via gdal-config).
 ENV DJANGO_SETTINGS_MODULE=config.settings
 
-# Create data directory for boundary files (can be bind-mounted from host)
-RUN mkdir -p /data && chown appuser:appuser /data
+# Create data directory for boundary files (can be bind-mounted from host) and
+# the static-collection target. /app is root-owned, so collectstatic (run at
+# startup as appuser, STATIC_ROOT=/app/staticfiles) cannot create it itself —
+# pre-create it owned by appuser.
+RUN mkdir -p /data /app/staticfiles && chown appuser:appuser /data /app/staticfiles
 
 # Switch to non-root user
 USER appuser
