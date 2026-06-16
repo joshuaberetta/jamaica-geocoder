@@ -57,7 +57,6 @@ export function LoginPage() {
           <Stack gap="md">
             <TextInput
               label="Username"
-              placeholder="admin"
               {...form.getInputProps('username')}
               autoComplete="username"
             />

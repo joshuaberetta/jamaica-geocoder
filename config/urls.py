@@ -77,9 +77,11 @@ urlpatterns = [
 ]
 
 # SPA catch-all — must be last. Excludes the API/admin prefixes so unknown API
-# paths 404 as JSON rather than returning index.html.
+# paths 404 as JSON rather than returning index.html. `admin` is matched with
+# an optional trailing slash so /admin (no slash) reaches Django's APPEND_SLASH
+# redirect to /admin/ instead of being swallowed by the SPA.
 urlpatterns += [
-    re_path(r"^(?!admin/|api/|countries|boundaries\.geojson|secondary_boundaries\.geojson|"
+    re_path(r"^(?!admin(/|$)|api/|countries|boundaries\.geojson|secondary_boundaries\.geojson|"
             r"boundaries/|xlsform|geocode|geocode_single|reverse_geocode|health|static/)(?P<path>.*)$",
             core_views.serve_spa),
 ]
