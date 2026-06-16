@@ -75,6 +75,14 @@ INSTALLED_APPS = [
     "apps.boundary_csv",
 ]
 
+# Django's SecurityMiddleware defaults SECURE_REFERRER_POLICY to "same-origin",
+# which strips the Referer header on cross-origin requests. OpenStreetMap's
+# tile servers now reject requests with no Referer ("Access blocked / Referer
+# is required by the tile usage policy"), breaking the Leaflet basemap.
+# "strict-origin-when-cross-origin" still sends the origin (not the full path)
+# cross-origin, satisfying OSM's policy without leaking paths.
+SECURE_REFERRER_POLICY = "strict-origin-when-cross-origin"
+
 MIDDLEWARE = [
     "corsheaders.middleware.CorsMiddleware",
     "django.middleware.security.SecurityMiddleware",
