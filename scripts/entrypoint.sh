@@ -1,6 +1,17 @@
 #!/bin/sh
 set -e
 
+# GeoDjango native library resolution. The image ships system GEOS/GDAL (via
+# libgdal-dev), but config/settings.py's wheel-discovery globs can otherwise
+# match the GEOS bundled inside the shapely wheel, whose hashed sibling .so
+# (e.g. libgeos-*.so.3.13.1) is not on the dynamic loader path and fails to
+# dlopen. ldconfig -p lists only system libraries (wheel-bundled .so files are
+# not registered), so this points GeoDjango at the system copies. settings.py
+# respects these when already set.
+export GEOS_LIBRARY_PATH="${GEOS_LIBRARY_PATH:-$(ldconfig -p | awk -F'=> ' '/libgeos_c\.so/{print $2; exit}')}"
+export GDAL_LIBRARY_PATH="${GDAL_LIBRARY_PATH:-$(ldconfig -p | awk -F'=> ' '/libgdal\.so/{print $2; exit}')}"
+echo "==> GEOS_LIBRARY_PATH=${GEOS_LIBRARY_PATH:-<unset>}  GDAL_LIBRARY_PATH=${GDAL_LIBRARY_PATH:-<unset>}"
+
 # ---------------------------------------------------------------------------
 # Web service entrypoint.
 #
