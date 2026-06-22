@@ -87,6 +87,7 @@ export function MapSection({ country, mapCenter, isVisible = true }: Props) {
 
   const handleFitDone = useCallback(() => setOverlayVisible(false), []);
   const [result, setResult] = useState<PcodeResult | null>(null);
+  const [resolving, setResolving] = useState(false);
 
   // Pick a sensible default level when the available levels for a country load.
   useEffect(() => {
@@ -152,11 +153,15 @@ export function MapSection({ country, mapCenter, isVisible = true }: Props) {
   // version without needing to rebind the layer.
   const resolveAt = useCallback(async (lat: number, lon: number) => {
     setMarkerPos([lat, lon]);
+    setResult(null);
+    setResolving(true);
     try {
       const res = await reverseGeocode(lat, lon, country ?? undefined);
       setResult(res);
     } catch (err) {
       setResult({ success: false, error: (err as Error).message });
+    } finally {
+      setResolving(false);
     }
   }, [country]);
 
@@ -264,7 +269,16 @@ export function MapSection({ country, mapCenter, isVisible = true }: Props) {
           )}
         </Box>
 
-        {result && (
+        {resolving && (
+          <Alert color="blue" variant="light">
+            <Group gap="xs">
+              <Loader size="sm" />
+              <Text size="sm">Looking up P-codes for this location…</Text>
+            </Group>
+          </Alert>
+        )}
+
+        {!resolving && result && (
           result.success ? (
             <Alert color="green" variant="light">
               <PcodeResultCard result={result} />
