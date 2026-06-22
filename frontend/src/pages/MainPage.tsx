@@ -1,6 +1,7 @@
 import { Anchor, Button, Container, Group, Paper, Stack, Tabs, Text } from '@mantine/core';
 import { useEffect, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
+import { ApiTokenModal } from '../components/ApiTokenModal';
 import { BatchUpload } from '../components/BatchUpload';
 import { BoundaryCsvLists } from '../components/BoundaryCsvLists';
 import { CountrySelect } from '../components/CountrySelect';
@@ -24,6 +25,7 @@ export function MainPage() {
   const [selectedCountry, setSelectedCountry] = useState<Country | null>(null);
   const [mapCenter, setMapCenter] = useState<{ lat: number; lon: number; zoom: number } | null>(null);
   const [activeTab, setActiveTab] = useState<string>('map');
+  const [tokenModalOpen, setTokenModalOpen] = useState(false);
   const [searchParams] = useSearchParams();
   const { countries } = useCountries();
   const { loggedIn, logout } = useAuth();
@@ -65,6 +67,11 @@ export function MainPage() {
               >
                 API Docs
               </Button>
+              {loggedIn && (
+                <Button onClick={() => setTokenModalOpen(true)} variant="default" size="sm">
+                  API Token
+                </Button>
+              )}
               <Button
                 onClick={() => {
                   if (loggedIn) {
@@ -144,6 +151,8 @@ export function MainPage() {
             </Text>
         </Group>
       </Container>
+
+      <ApiTokenModal opened={tokenModalOpen} onClose={() => setTokenModalOpen(false)} />
     </div>
   );
 }

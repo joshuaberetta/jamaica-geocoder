@@ -75,6 +75,17 @@ CSRF_TRUSTED_ORIGINS = [
 # treats requests as HTTPS (correct secure-cookie and Origin handling).
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
+# Session/CSRF cookies for the SPA's cookie-based auth. Secure-only in
+# production (served over HTTPS); SameSite=Lax is fine since the SPA is
+# same-origin. The session cookie stays HttpOnly (Django default) so XSS can't
+# read it; the CSRF cookie must NOT be HttpOnly because the SPA's JS reads it
+# to echo the X-CSRFToken header on unsafe requests.
+SESSION_COOKIE_SECURE = not DEBUG
+CSRF_COOKIE_SECURE = not DEBUG
+SESSION_COOKIE_SAMESITE = "Lax"
+CSRF_COOKIE_SAMESITE = "Lax"
+CSRF_COOKIE_HTTPONLY = False
+
 INSTALLED_APPS = [
     "django.contrib.admin",
     "django.contrib.auth",
@@ -184,7 +195,14 @@ else:
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
+        # TokenAuthentication serves headless API clients (curl, KoboToolbox)
+        # via the Authorization header; SessionAuthentication authenticates the
+        # browser SPA via the Django session cookie set at login. DRF only
+        # enforces CSRF on session-authenticated requests, so token-only clients
+        # are unaffected. Token auth is listed first so unauthenticated requests
+        # get 401 (its WWW-Authenticate header) rather than session auth's 403.
         "rest_framework.authentication.TokenAuthentication",
+        "rest_framework.authentication.SessionAuthentication",
     ],
     "DEFAULT_PERMISSION_CLASSES": [
         "rest_framework.permissions.AllowAny",

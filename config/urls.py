@@ -63,8 +63,11 @@ urlpatterns = [
     path("reverse_geocode", geocoding_views.reverse_geocode),
 
     # --- Auth ---
+    path("api/login", accounts_views.login),
+    path("api/logout", accounts_views.logout),
     path("api/token", accounts_views.obtain_token),
     path("api/me", accounts_views.me),
+    path("api/me/token", accounts_views.me_token),
 
     # --- Core / ops ---
     path("health", core_views.health),

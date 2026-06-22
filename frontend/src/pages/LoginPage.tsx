@@ -23,7 +23,7 @@ export function LoginPage() {
     setLoading(true);
     setError(null);
     try {
-      // Exchange credentials for an API token (stored in localStorage).
+      // Authenticate and start a session (sets the session cookie).
       await login(values.username, values.password);
       setLoggedIn(true);
       navigate('/');

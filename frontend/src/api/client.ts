@@ -6,12 +6,21 @@ import type {
   PcodeResult,
   SecondaryTypes,
 } from './types';
-import { authHeaders } from './auth';
+import { csrfHeaders } from './auth';
+
+// Methods that mutate state need a CSRF token when authenticated by session.
+const UNSAFE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 async function request<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
+  const method = (init?.method ?? 'GET').toUpperCase();
   const res = await fetch(input, {
     ...init,
-    headers: { ...authHeaders(), ...(init?.headers ?? {}) },
+    // Send the session cookie on every request (same-origin in production).
+    credentials: 'include',
+    headers: {
+      ...(UNSAFE_METHODS.has(method) ? csrfHeaders() : {}),
+      ...(init?.headers ?? {}),
+    },
   });
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));

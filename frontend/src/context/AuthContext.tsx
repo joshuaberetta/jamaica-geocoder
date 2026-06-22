@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import { authHeaders, clearToken, getToken } from '../api/auth';
+import { logout as apiLogout } from '../api/auth';
 
 interface AuthContextValue {
   loggedIn: boolean;
@@ -16,27 +16,16 @@ const AuthContext = createContext<AuthContextValue>({
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [loggedIn, setLoggedIn] = useState(false);
 
-  // On mount, if a token is stored, confirm it is still valid via /api/me.
+  // On mount, confirm the session via /api/me. This also plants the CSRF
+  // cookie the SPA needs for subsequent unsafe requests.
   useEffect(() => {
-    if (!getToken()) {
-      setLoggedIn(false);
-      return;
-    }
-    fetch('/api/me', { headers: authHeaders() })
-      .then((r) => {
-        if (r.ok) {
-          setLoggedIn(true);
-        } else {
-          clearToken(); // stale/invalid token
-          setLoggedIn(false);
-        }
-      })
+    fetch('/api/me', { credentials: 'include' })
+      .then((r) => setLoggedIn(r.ok))
       .catch(() => setLoggedIn(false));
   }, []);
 
   const logout = () => {
-    clearToken();
-    setLoggedIn(false);
+    apiLogout().finally(() => setLoggedIn(false));
   };
 
   return (

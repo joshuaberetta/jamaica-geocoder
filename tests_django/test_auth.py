@@ -12,6 +12,7 @@ from unittest.mock import patch
 import pytest
 from django.contrib.auth import get_user_model
 from rest_framework.authtoken.models import Token
+from rest_framework.test import APIClient
 
 pytestmark = pytest.mark.django_db
 
@@ -194,3 +195,130 @@ def test_cache_clear_single_country(auth_api):
     assert r.status_code == 200
     mock_one.assert_called_once_with("JM")
     mock_all.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# POST /api/login  +  POST /api/logout — session cookie auth (the web UI path)
+# ---------------------------------------------------------------------------
+
+def test_login_bad_credentials(api, admin_user):
+    r = api.post("/api/login", {"username": "admin", "password": "wrong"}, format="json")
+    assert r.status_code == 400
+
+
+def test_login_starts_session_and_authenticates(api, admin_user):
+    """A session login lets a subsequent protected POST through with no token."""
+    r = api.post("/api/login", {"username": "admin", "password": "secret"}, format="json")
+    assert r.status_code == 200
+    assert r.json()["username"] == "admin"
+
+    # Same client (now carrying the session cookie) can reach a protected view.
+    me = api.get("/api/me")
+    assert me.status_code == 200
+    assert me.json()["logged_in"] is True
+
+
+def test_logout_ends_session(api, admin_user):
+    api.post("/api/login", {"username": "admin", "password": "secret"}, format="json")
+    assert api.get("/api/me").status_code == 200
+
+    r = api.post("/api/logout")
+    assert r.status_code == 200
+    assert api.get("/api/me").status_code == 401
+
+
+def test_me_plants_csrf_cookie(api, admin_user):
+    """GET /api/me sets the CSRF cookie the SPA needs for unsafe requests."""
+    api.post("/api/login", {"username": "admin", "password": "secret"}, format="json")
+    r = api.get("/api/me")
+    assert "csrftoken" in r.cookies
+
+
+def test_session_post_requires_csrf(admin_user, pcode_result):
+    """With CSRF enforcement on, a session POST without the token is rejected,
+    and succeeds once the X-CSRFToken header is supplied."""
+    client = APIClient(enforce_csrf_checks=True)
+    client.post("/api/login", {"username": "admin", "password": "secret"}, format="json")
+    csrf = client.get("/api/me").cookies["csrftoken"].value
+
+    with patch("apps.geocoding.views.geocode_address", return_value=(18.1, -76.5, "ROOFTOP")), \
+         patch("apps.geocoding.views.resolve_pcodes", return_value=pcode_result), \
+         patch("apps.geocoding.views.resolve_secondary_boundaries", return_value={}):
+        denied = client.post("/geocode_single", {"address": "Kingston"}, format="json")
+        assert denied.status_code == 403
+
+        allowed = client.post(
+            "/geocode_single", {"address": "Kingston"}, format="json",
+            HTTP_X_CSRFTOKEN=csrf,
+        )
+    assert allowed.status_code == 200
+
+
+def test_token_client_not_subject_to_csrf(admin_user, pcode_result):
+    """Regression guard: header-token clients (curl/Kobo) bypass CSRF even with
+    enforcement on, since they carry no session."""
+    token, _ = Token.objects.get_or_create(user=admin_user)
+    client = APIClient(enforce_csrf_checks=True)
+    client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
+    with patch("apps.geocoding.views.geocode_address", return_value=(18.1, -76.5, "ROOFTOP")), \
+         patch("apps.geocoding.views.resolve_pcodes", return_value=pcode_result), \
+         patch("apps.geocoding.views.resolve_secondary_boundaries", return_value={}):
+        r = client.post("/geocode_single", {"address": "Kingston"}, format="json")
+    assert r.status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# GET/POST /api/me/token — retrieve + rotate the API token
+# ---------------------------------------------------------------------------
+
+def test_me_token_requires_auth(api):
+    assert api.get("/api/me/token").status_code == 401
+
+
+def test_me_token_get_via_token_auth(auth_api, admin_user):
+    """Token-authed client can read its token; it matches the stored one."""
+    token, _ = Token.objects.get_or_create(user=admin_user)
+    r = auth_api.get("/api/me/token")
+    assert r.status_code == 200
+    assert r.json()["token"] == token.key
+
+
+def test_me_token_get_via_session_auth(api, admin_user):
+    """Cookie-authed (session) client can read its token too."""
+    api.post("/api/login", {"username": "admin", "password": "secret"}, format="json")
+    r = api.get("/api/me/token")
+    assert r.status_code == 200
+    assert r.json()["token"]
+
+
+def test_me_token_rotate_invalidates_old(api, admin_user):
+    """POST issues a new token; the old key stops authenticating."""
+    old, _ = Token.objects.get_or_create(user=admin_user)
+    old_key = old.key
+
+    api.post("/api/login", {"username": "admin", "password": "secret"}, format="json")
+    r = api.post("/api/me/token")
+    assert r.status_code == 201
+    new_key = r.json()["token"]
+    assert new_key != old_key
+
+    # Old token no longer works; new one does.
+    stale = APIClient()
+    stale.credentials(HTTP_AUTHORIZATION=f"Token {old_key}")
+    assert stale.get("/api/me").status_code == 401
+
+    fresh = APIClient()
+    fresh.credentials(HTTP_AUTHORIZATION=f"Token {new_key}")
+    assert fresh.get("/api/me").status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# OpenAPI schema — the new endpoints must be documented
+# ---------------------------------------------------------------------------
+
+def test_schema_includes_new_auth_paths(api):
+    r = api.get("/api/schema/")
+    assert r.status_code == 200
+    body = r.content.decode()
+    for path in ("/api/login", "/api/logout", "/api/me/token"):
+        assert path in body
