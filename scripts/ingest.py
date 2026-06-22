@@ -399,6 +399,58 @@ def _insert_rows(rows: list[dict], iso2: str, adm_level: int) -> None:
         )
 
 
+def prune_padding_rows() -> int:
+    """Remove "padding" rows the HDX global-matched dataset adds to give every
+    country a uniform ADM4 depth.
+
+    When a country's real boundaries stop at ADM2 (e.g. Afghanistan), the
+    matched dataset still emits admin3/admin4 layers whose rows are copies of
+    the parent unit with the deeper P-code column set equal to the parent's
+    (e.g. adm3_pcode == adm2_pcode). A genuine child always gets a distinct,
+    longer P-code, so deepest_pcode == parent_pcode is a reliable padding
+    signal. This bloated cod_adm by ~43% (158k -> 90k rows, ~1.2 GB) and leaked
+    duplicate adm3/adm4 codes into the geocode API response.
+
+    Two cases, handled in order:
+      1. Padding rows whose parent unit *also* exists at the level above (same
+         P-code) are pure duplicates -> delete.
+      2. Padding rows with no such parent are a real unit mis-filed one level
+         too deep -> demote adm_level and null the padded deepest column,
+         preserving the geometry/unit while dropping the duplicate code.
+
+    Idempotent: re-running finds nothing once clean. Returns rows removed.
+    """
+    with engine.begin() as conn:
+        # Case 2 first (demote orphans), so case 1 then sees their corrected
+        # level and only deletes true duplicates that have a canonical parent.
+        demoted_l4 = conn.execute(text("""
+            UPDATE cod_adm a SET adm_level = 3, adm4_pcode = NULL, adm4_name = NULL
+            WHERE a.adm_level = 4 AND a.adm4_pcode = a.adm3_pcode
+              AND NOT EXISTS (SELECT 1 FROM cod_adm b
+                              WHERE b.iso2 = a.iso2 AND b.adm_level = 3
+                                AND b.adm3_pcode = a.adm3_pcode)
+        """)).rowcount
+        demoted_l3 = conn.execute(text("""
+            UPDATE cod_adm a SET adm_level = 2, adm3_pcode = NULL, adm3_name = NULL
+            WHERE a.adm_level = 3 AND a.adm3_pcode = a.adm2_pcode
+              AND NOT EXISTS (SELECT 1 FROM cod_adm b
+                              WHERE b.iso2 = a.iso2 AND b.adm_level = 2
+                                AND b.adm2_pcode = a.adm2_pcode)
+        """)).rowcount
+
+        deleted = conn.execute(text("""
+            DELETE FROM cod_adm WHERE id IN (
+                SELECT id FROM cod_adm WHERE adm_level = 2 AND adm2_pcode = adm1_pcode
+                UNION ALL SELECT id FROM cod_adm WHERE adm_level = 3 AND adm3_pcode = adm2_pcode
+                UNION ALL SELECT id FROM cod_adm WHERE adm_level = 4 AND adm4_pcode = adm3_pcode
+            )
+        """)).rowcount
+
+    print(f"  Pruned padding: deleted {deleted} duplicate rows, "
+          f"demoted {demoted_l3 + demoted_l4} mis-filed rows.")
+    return deleted
+
+
 def set_ingest_complete(levels: list[int]) -> None:
     """Record that a full global ingest finished successfully. Writes a single
     row into ingest_meta keyed 'global_complete'. The deploy gate checks this
@@ -870,8 +922,14 @@ def main():
     print(f"\nDone. {total_rows:,} total rows inserted.")
 
     # ------------------------------------------------------------------
-    # Post-ingest: refresh materialized view + clear app cache
+    # Post-ingest: drop dataset padding, refresh materialized view, clear cache
     # ------------------------------------------------------------------
+    print("\nPruning HDX matched-dataset padding rows...")
+    try:
+        prune_padding_rows()
+    except Exception as e:
+        print(f"  WARNING: Could not prune padding rows: {e}")
+
     print("\nRefreshing mv_countries materialized view...")
     try:
         with engine.begin() as conn:
