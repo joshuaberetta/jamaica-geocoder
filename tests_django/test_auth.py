@@ -95,6 +95,45 @@ def test_batch_geocode_non_admin_user_allowed(api, db, pcode_result):
     assert body["filename"] == "geocoded_addresses.csv"
 
 
+def test_batch_geocode_tolerates_ungeocodable_row(auth_api, pcode_result):
+    """Regression: a row that fails to geocode has a missing geometry, which
+    surfaces as NaN (a float) — not None — under some geopandas versions. The
+    batch must skip it for P-code resolution rather than crashing with
+    "'float' object has no attribute 'y'".
+
+    A plain DataFrame is returned so the NaN geometry survives verbatim (a
+    GeoDataFrame would coerce it back to None on newer geopandas, hiding the
+    exact production failure mode). The view only uses iterrows / row.geometry /
+    drop(columns="geometry"), which all work on a plain DataFrame."""
+    import pandas as pd
+    from shapely.geometry import Point
+
+    # Second row failed to geocode: NaN lat/lon and a NaN (float) geometry.
+    result_gdf = pd.DataFrame(
+        {"address": ["Good address", "Ungeocodable"],
+         "latitude": [18.1, float("nan")],
+         "longitude": [-76.5, float("nan")],
+         "geocode_confidence": ["ROOFTOP", None],
+         "geometry": [Point(-76.5, 18.1), float("nan")]},
+    )
+    stats = {"total": 2, "successful": 1, "failed": 1, "skipped": 0}
+
+    csv = pd.DataFrame({"address": ["Good address", "Ungeocodable"]}).to_csv(index=False)
+    with patch("apps.geocoding.views.geocode_dataframe", return_value=(result_gdf, stats)), \
+         patch("apps.geocoding.views.resolve_pcodes", return_value=pcode_result) as mock_pcodes, \
+         patch("apps.geocoding.views.resolve_secondary_boundaries", return_value={}):
+        r = auth_api.post(
+            "/geocode",
+            {"file": io.BytesIO(csv.encode()), "country": "JM"},
+            format="multipart",
+        )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["success"] is True
+    # Only the geocoded row triggers P-code resolution; the NaN row is skipped.
+    assert mock_pcodes.call_count == 1
+
+
 # ---------------------------------------------------------------------------
 # GET /geocode, POST /geocode_single, POST /reverse_geocode — token gating
 # ---------------------------------------------------------------------------

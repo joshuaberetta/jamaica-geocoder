@@ -17,6 +17,7 @@ import base64
 import io
 
 import pandas as pd
+from shapely.geometry.base import BaseGeometry
 from django.db import connection
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import OpenApiParameter, extend_schema
@@ -174,10 +175,13 @@ def geocode_batch(request):
 
         pcode_rows = []
         for _, row in points_gdf.iterrows():
-            if row.geometry is None:
+            geom = row.geometry
+            # Missing geometries surface as None or NaN (float) depending on the
+            # geopandas version, and as empty geometries in some cases — skip all.
+            if geom is None or (not isinstance(geom, BaseGeometry)) or geom.is_empty:
                 pcode_rows.append({})
                 continue
-            lat, lon = row.geometry.y, row.geometry.x
+            lat, lon = geom.y, geom.x
             pcodes = resolve_pcodes(lat, lon, iso2=iso2) or {}
             pcodes.update(resolve_secondary_boundaries(lat, lon, iso2=iso2))
             pcode_rows.append(pcodes)

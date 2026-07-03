@@ -1,7 +1,10 @@
 requests
 pandas
-geopandas
-shapely
+# Pinned together: geopandas 1.x requires shapely 2.x, and the pairing
+# determines whether a missing geometry surfaces as None or NaN (see the
+# batch-geocode guard in apps/geocoding/views.py).
+geopandas==1.1.1
+shapely==2.1.2
 pyproj
 python-dotenv
 openpyxl
